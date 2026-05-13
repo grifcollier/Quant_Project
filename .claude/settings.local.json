@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -c \"from src.strategies.pairs.viz import plot_scan_results; print\\('OK'\\)\")",
+      "Bash(python run.py pairs --scan --help)",
+      "Bash(findstr /i \"tickers corr min\")",
+      "Bash(python -c \"import plotly; print\\(plotly.__version__\\)\")",
+      "Bash(del debug_scan.html)",
+      "Bash(python run.py pairs --scan --universe financials)"
+    ]
+  }
+}

@@ -161,10 +161,7 @@ def plot_pair_stats(
     fig = go.Figure(data=[go.Table(
         columnwidth=[220, 200],
         header=dict(
-            values=[
-                f"<b>{ticker_a} / {ticker_b}</b>",
-                f"<b>{period}  ·  {n_days:,} trading days</b>",
-            ],
+            values=["<b>Metric</b>", "<b>Value</b>"],
             fill_color=_HEADER_BG,
             font=dict(color="white", size=14),
             align="left",
@@ -180,7 +177,7 @@ def plot_pair_stats(
     )])
 
     fig.update_layout(
-        title=dict(text=f"Statistics  —  {ticker_a} / {ticker_b}", font=dict(size=16)),
+        title=dict(text=f"Statistics  —  {ticker_a} / {ticker_b}  ·  {period}  ({n_days:,} days)", font=dict(size=16)),
         height=max(420, 110 + n * 28),
         template="plotly_white",
         margin=dict(l=20, r=20, t=60, b=20),
@@ -284,6 +281,100 @@ def plot_pair_charts(
     fig.update_yaxes(title_text="Z-Score",             gridcolor="#f0f0f0", row=3, col=1)
     fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0")
 
+    return fig
+
+
+def plot_scan_results(scan_df: pd.DataFrame, universe_name: str) -> go.Figure:
+    """
+    Ranked cointegration scan results table.
+    Green rows pass all filters; red rows fail. Sorted best-first by ADF p-value.
+    """
+    n = len(scan_df)
+
+    if n == 0:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No pairs could be tested — check that tickers have sufficient price history.",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=14, color="#888888"),
+        )
+        fig.update_layout(title=f"Pair Scanner — {universe_name}", template="plotly_white", height=200)
+        return fig
+
+    row_bg  = [_GOOD_BG if p else _BAD_BG  for p in scan_df["passes"]]
+    row_fg  = [_GOOD_FG if p else _BAD_FG  for p in scan_df["passes"]]
+    stat_bg = ["#d4edda" if v else "#f8d7da" for v in scan_df["is_stationary"]]
+    stat_fg = ["#155724" if v else "#721c24" for v in scan_df["is_stationary"]]
+
+    hl_display = [
+        f"{v:.1f}" if v != float("inf") else "inf" for v in scan_df["half_life"]
+    ]
+    stat_display  = ["Yes" if v else "No" for v in scan_df["is_stationary"]]
+    passes_display = ["Pass" if v else "Fail" for v in scan_df["passes"]]
+    has_corr = "correlation" in scan_df.columns
+
+    if has_corr:
+        col_headers = [
+            "<b>Pair</b>", "<b>Corr</b>", "<b>Beta (b)</b>", "<b>ADF p-value</b>",
+            "<b>Stationary</b>", "<b>Half-Life (days)</b>", "<b>Filters</b>",
+        ]
+        col_values = [
+            scan_df["pair"].tolist(),
+            scan_df["correlation"].tolist(),
+            scan_df["beta"].tolist(),
+            scan_df["adf_pval"].tolist(),
+            stat_display,
+            hl_display,
+            passes_display,
+        ]
+        col_fill  = [row_bg, row_bg, row_bg, row_bg, stat_bg, row_bg, row_bg]
+        col_font  = [row_fg, row_fg, row_fg, row_fg, stat_fg, row_fg, row_fg]
+        col_width = [110, 65, 80, 100, 90, 130, 80]
+    else:
+        col_headers = [
+            "<b>Pair</b>", "<b>Beta (b)</b>", "<b>ADF p-value</b>",
+            "<b>Stationary</b>", "<b>Half-Life (days)</b>", "<b>Filters</b>",
+        ]
+        col_values = [
+            scan_df["pair"].tolist(),
+            scan_df["beta"].tolist(),
+            scan_df["adf_pval"].tolist(),
+            stat_display,
+            hl_display,
+            passes_display,
+        ]
+        col_fill  = [row_bg, row_bg, row_bg, stat_bg, row_bg, row_bg]
+        col_font  = [row_fg, row_fg, row_fg, stat_fg, row_fg, row_fg]
+        col_width = [110, 80, 100, 90, 130, 100]
+
+    fig = go.Figure(data=[go.Table(
+        columnwidth=col_width,
+        header=dict(
+            values=col_headers,
+            fill_color=_HEADER_BG,
+            font=dict(color="white", size=13),
+            align="left",
+            height=38,
+        ),
+        cells=dict(
+            values=col_values,
+            fill_color=col_fill,
+            align="left",
+            font=dict(color=col_font, size=12),
+            height=32,
+        ),
+    )])
+
+    passing = scan_df["passes"].sum()
+    fig.update_layout(
+        title=dict(
+            text=f"Pair Scanner — {universe_name}  ·  {passing}/{n} pairs pass filters",
+            font=dict(size=16),
+        ),
+        height=min(max(350, 160 + n * 36), 650),
+        template="plotly_white",
+        margin=dict(l=20, r=20, t=65, b=20),
+    )
     return fig
 
 
@@ -686,11 +777,7 @@ def plot_pair_interpretation(
     fig = go.Figure(data=[go.Table(
         columnwidth=[180, 160, 520],
         header=dict(
-            values=[
-                f"<b>{ticker_a} / {ticker_b}</b>",
-                f"<b>{period}  ·  {n_days:,} days</b>",
-                "<b>Interpretation</b>",
-            ],
+            values=["<b>Metric</b>", "<b>Value</b>", "<b>Interpretation</b>"],
             fill_color=_HEADER_BG,
             font=dict(color="white", size=13),
             align="left",
@@ -710,7 +797,7 @@ def plot_pair_interpretation(
 
     fig.update_layout(
         title=dict(
-            text=f"Interpretation  —  {ticker_a} / {ticker_b}",
+            text=f"Interpretation  —  {ticker_a} / {ticker_b}  ·  {period}  ({n_days:,} days)",
             font=dict(size=16),
         ),
         height=max(480, 130 + (n + 1) * 30),
@@ -915,10 +1002,7 @@ def plot_backtest_metrics(
     fig = go.Figure(data=[go.Table(
         columnwidth=[220, 200],
         header=dict(
-            values=[
-                f"<b>{ticker_a} / {ticker_b}  —  Backtest Results</b>",
-                f"<b>{period}  ·  {len(trades)} trades</b>",
-            ],
+            values=["<b>Metric</b>", "<b>Value</b>"],
             fill_color=_HEADER_BG,
             font=dict(color="white", size=14),
             align="left",
@@ -934,7 +1018,7 @@ def plot_backtest_metrics(
     )])
 
     fig.update_layout(
-        title=dict(text=f"Backtest Metrics  —  {ticker_a} / {ticker_b}", font=dict(size=16)),
+        title=dict(text=f"Backtest Metrics  —  {ticker_a} / {ticker_b}  ·  {period}  ({len(trades)} trades)", font=dict(size=16)),
         height=max(400, 110 + n * 28),
         template="plotly_white",
         margin=dict(l=20, r=20, t=60, b=20),
@@ -1245,11 +1329,7 @@ def plot_backtest_interpretation(
     fig = go.Figure(data=[go.Table(
         columnwidth=[160, 120, 560],
         header=dict(
-            values=[
-                f"<b>{ticker_a} / {ticker_b}</b>",
-                f"<b>{period}  ·  {len(trades)} trades</b>",
-                "<b>What This Means</b>",
-            ],
+            values=["<b>Metric</b>", "<b>Value</b>", "<b>What This Means</b>"],
             fill_color=_HEADER_BG,
             font=dict(color="white", size=13),
             align="left",
@@ -1265,7 +1345,7 @@ def plot_backtest_interpretation(
     )])
 
     fig.update_layout(
-        title=dict(text=f"Backtest Explanation  —  {ticker_a} / {ticker_b}", font=dict(size=16)),
+        title=dict(text=f"Backtest Explanation  —  {ticker_a} / {ticker_b}  ·  {period}  ({len(trades)} trades)", font=dict(size=16)),
         height=max(500, 130 + (n + 1) * 32),
         template="plotly_white",
         margin=dict(l=20, r=20, t=60, b=20),

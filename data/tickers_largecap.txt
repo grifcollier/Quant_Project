@@ -1,0 +1,87 @@
+# Large-cap universe for pairs scanning
+# ~80 liquid names across 6 sectors
+
+# Financials
+GS
+MS
+JPM
+BAC
+C
+WFC
+BLK
+SCHW
+AXP
+COF
+USB
+PNC
+TFC
+MTB
+FITB
+
+# Energy
+XOM
+CVX
+COP
+SLB
+EOG
+PSX
+VLO
+MPC
+OXY
+HAL
+DVN
+HES
+FANG
+
+# Consumer Staples
+KO
+PEP
+PG
+CL
+KMB
+GIS
+K
+CPB
+MKC
+SJM
+CAG
+
+# Healthcare
+JNJ
+ABT
+MDT
+BMY
+PFE
+MRK
+ABBV
+AMGN
+GILD
+BIIB
+VRTX
+REGN
+
+# Airlines / Transport
+DAL
+UAL
+AAL
+LUV
+ALK
+JBLU
+UPS
+FDX
+
+# Technology
+MSFT
+GOOGL
+META
+AAPL
+AMZN
+NVDA
+AMD
+INTC
+QCOM
+TXN
+MU
+AMAT
+LRCX
+KLAC
