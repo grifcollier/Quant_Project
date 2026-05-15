@@ -35,6 +35,8 @@ def fetch_ohlcv(
     df = raw[["Open", "High", "Low", "Close", "Volume"]].copy()
     df.columns = _OHLCV_COLS
     df.index = pd.to_datetime(df.index)
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
     df.index.name = "date"
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)

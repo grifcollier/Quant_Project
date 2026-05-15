@@ -1,4 +1,4 @@
-"""Pairwise cointegration tests and universe scanner."""
+"""Pairwise cointegration tests, universe scanner, and cascade stability check."""
 
 import itertools
 
@@ -7,6 +7,20 @@ import pandas as pd
 
 from src.analytics.stationarity import adf_test, compute_half_life
 from src.strategies.pairs.spread import compute_hedge_ratio, compute_spread
+
+# Approximate trading days per period string
+_PERIOD_DAYS = {
+    "3mo": 63, "6mo": 126, "1y": 252, "2y": 504, "5y": 1260, "10y": 2520,
+}
+
+# Sub-periods to test for each initial period
+_CASCADE_MAP = {
+    "10y": ["5y", "2y", "1y", "6mo"],
+    "5y":  ["2y", "1y", "6mo", "3mo"],
+    "2y":  ["1y", "6mo", "3mo"],
+    "1y":  ["6mo", "3mo"],
+    "6mo": ["3mo"],
+}
 
 
 def test_pair(series_a: pd.Series, series_b: pd.Series) -> dict:
@@ -148,3 +162,74 @@ def scan_universe(
 
     df = pd.DataFrame(rows).sort_values("adf_pval").reset_index(drop=True)
     return df
+
+
+def cascade_scan(
+    passing_pairs: list,
+    prices: dict,
+    initial_period: str,
+    max_pvalue: float = 0.10,
+    min_half_life: float = 5.0,
+    max_half_life: float = 100.0,
+) -> dict:
+    """
+    Re-test cointegration on progressively shorter sub-periods for pairs that
+    passed the initial scan. Slices the already-fetched price data — no extra
+    network calls.
+
+    Parameters
+    ----------
+    passing_pairs  : List of (ticker_a, ticker_b) tuples from the initial scan.
+    prices         : Dict of {ticker: pd.Series} from the initial fetch.
+    initial_period : The period string used for the initial scan (e.g. '2y').
+
+    Returns
+    -------
+    Dict keyed by 'TICKER_A/TICKER_B', each value a dict keyed by period string
+    containing: adf_pval, is_stationary, half_life, passes.
+    """
+    sub_periods = _CASCADE_MAP.get(initial_period, [])
+    if not sub_periods or not passing_pairs:
+        return {}
+
+    results = {}
+
+    for ta, tb in passing_pairs:
+        pair_key = f"{ta}/{tb}"
+        sa = prices[ta]
+        sb = prices[tb]
+        pair_results = {}
+
+        for period in sub_periods:
+            n_days = _PERIOD_DAYS.get(period, 0)
+            if n_days == 0:
+                continue
+            sa_sub = sa.iloc[-n_days:]
+            sb_sub = sb.iloc[-n_days:]
+            combined = pd.concat(
+                [sa_sub.rename("a"), sb_sub.rename("b")], axis=1
+            ).dropna()
+            if len(combined) < 30:
+                continue
+            try:
+                result = test_pair(combined["a"], combined["b"])
+            except Exception:
+                continue
+
+            hl = result["half_life"]
+            passes = (
+                result["p_value"] < max_pvalue
+                and hl != float("inf")
+                and min_half_life <= hl <= max_half_life
+            )
+            pair_results[period] = {
+                "adf_pval":      round(result["p_value"], 4),
+                "is_stationary": result["is_stationary"],
+                "half_life":     round(hl, 1) if hl != float("inf") else float("inf"),
+                "passes":        passes,
+            }
+
+        if pair_results:
+            results[pair_key] = pair_results
+
+    return results

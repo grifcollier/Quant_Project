@@ -23,12 +23,12 @@ def compute_metrics(
 
     Returns
     -------
-    dict with keys: total_return, cagr, sharpe, max_drawdown, n_trades,
-    win_rate, avg_win, avg_loss, profit_factor, avg_hold_days.
+    dict with keys: total_return, cagr, sharpe, sortino, max_drawdown, calmar,
+    n_trades, win_rate, avg_win, avg_loss, profit_factor, avg_hold_days.
     """
     empty = {
-        "total_return": 0.0, "cagr": 0.0, "sharpe": 0.0,
-        "max_drawdown": 0.0, "n_trades": 0,
+        "total_return": 0.0, "cagr": 0.0, "sharpe": 0.0, "sortino": 0.0,
+        "max_drawdown": 0.0, "calmar": float("nan"), "n_trades": 0,
         "win_rate": float("nan"), "avg_win": float("nan"),
         "avg_loss": float("nan"), "profit_factor": float("nan"),
         "avg_hold_days": float("nan"),
@@ -51,7 +51,15 @@ def compute_metrics(
     else:
         sharpe = 0.0
 
+    downside = daily_returns[daily_returns < 0].std()
+    if len(daily_returns) >= 2 and downside > 0:
+        sortino = float(daily_returns.mean() / downside * math.sqrt(252))
+    else:
+        sortino = 0.0
+
     max_drawdown = float((equity / equity.cummax() - 1).min())
+
+    calmar = cagr / abs(max_drawdown) if max_drawdown < 0 else float("nan")
 
     # ── Trade metrics ─────────────────────────────────────────────────────────
     n_trades = len(trades)
@@ -79,7 +87,9 @@ def compute_metrics(
         "total_return":  total_return,
         "cagr":          cagr,
         "sharpe":        sharpe,
+        "sortino":       sortino,
         "max_drawdown":  max_drawdown,
+        "calmar":        calmar,
         "n_trades":      n_trades,
         "win_rate":      win_rate,
         "avg_win":       avg_win,

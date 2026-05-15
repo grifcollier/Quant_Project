@@ -135,11 +135,23 @@ def plot_pair_stats(
     row("Stationary",        "Yes  ✓" if adf["is_stationary"] else "No  ✗",
         highlight="good" if adf["is_stationary"] else "bad")
     row("Half-life",         f"{half_life} days  (~{half_life / 5:.1f} weeks)")
-    row("Suggested Window",  f"{int(half_life * 2)}–{int(half_life * 3)} days")
+    suggested_lo = int(half_life * 2)
+    suggested_hi = int(half_life * 3)
+    window_in_range = suggested_lo <= params["rolling_window"] <= suggested_hi
+    row("Suggested Window",  f"{suggested_lo}–{suggested_hi} days",
+        highlight=None if half_life == float("inf") else None)
 
     section("SIGNAL PARAMETERS")
-    row("Period",            period)
-    row("Rolling Window",    f"{params['rolling_window']} days")
+    test_period = params.get("test_period")
+    if test_period:
+        row("Training Period",   f"{period} (all data minus last {test_period})")
+        row("Test Period",       test_period, highlight="good")
+    else:
+        row("Period",            period)
+    window_hl = None if half_life == float("inf") else ("good" if window_in_range else "warn")
+    window_note = "" if window_in_range else f"  ← suggested {suggested_lo}–{suggested_hi}"
+    row("Rolling Window",    f"{params['rolling_window']} days{window_note}",
+        highlight=window_hl)
     row("Entry Threshold",   f"±{params['z_entry']} σ")
     row("Exit Threshold",    f"±{params['z_exit']} σ")
     row("Stop Threshold",    f"±{params['z_stop']} σ")
@@ -160,18 +172,11 @@ def plot_pair_stats(
 
     fig = go.Figure(data=[go.Table(
         columnwidth=[220, 200],
-        header=dict(
-            values=["<b>Metric</b>", "<b>Value</b>"],
-            fill_color=_HEADER_BG,
-            font=dict(color="white", size=14),
-            align="left",
-            height=42,
-        ),
         cells=dict(
-            values=[metrics, values],
-            fill_color=[bg_left, bg_right],
+            values=[["<b>Metric</b>"] + metrics, ["<b>Value</b>"] + values],
+            fill_color=[["#e8ecef"] + bg_left, ["#e8ecef"] + bg_right],
             align="left",
-            font=dict(color=[font_left, font_right], size=12),
+            font=dict(color=[["#2c3e50"] + font_left, ["#2c3e50"] + font_right], size=12),
             height=28,
         ),
     )])
@@ -193,6 +198,7 @@ def plot_pair_charts(
     beta: float,
     signals_df: pd.DataFrame,
     params: dict,
+    split_date=None,
 ) -> go.Figure:
     """
     Three-panel chart: normalized prices, spread, and z-score.
@@ -261,6 +267,22 @@ def plot_pair_charts(
                 marker=dict(symbol=symbol, color=color, size=10, line=dict(width=1, color="white")),
             ), row=3, col=1)
 
+    # ── Train/test split marker ───────────────────────────────────────────────
+    if split_date is not None:
+        test_period_label = params.get("test_period", "test")
+        for row_n in (1, 2, 3):
+            fig.add_vline(
+                x=split_date, line_dash="dash", line_color="#e67e22", line_width=1.5,
+                row=row_n, col=1,
+            )
+        fig.add_vrect(
+            x0=split_date, x1=df.index[-1],
+            fillcolor="rgba(230,126,34,0.06)", line_width=0,
+            annotation_text=f"← Training  |  Test ({test_period_label}) →",
+            annotation_position="top left",
+            annotation_font=dict(size=11, color="#e67e22"),
+        )
+
     fig.update_layout(
         title=dict(
             text=f"Pairs Trading Charts  —  {ticker_a} / {ticker_b}",
@@ -294,11 +316,23 @@ def plot_scan_results(scan_df: pd.DataFrame, universe_name: str) -> go.Figure:
     if n == 0:
         fig = go.Figure()
         fig.add_annotation(
-            text="No pairs could be tested — check that tickers have sufficient price history.",
-            xref="paper", yref="paper", x=0.5, y=0.5,
-            showarrow=False, font=dict(size=14, color="#888888"),
+            text=f"No pairs to test in {universe_name}",
+            xref="paper", yref="paper", x=0.5, y=0.6,
+            showarrow=False, font=dict(size=28, color="#555555"),
         )
-        fig.update_layout(title=f"Pair Scanner — {universe_name}", template="plotly_white", height=200)
+        fig.add_annotation(
+            text="No ticker pairs passed the correlation filter — stocks in this universe<br>"
+                 "are not sufficiently correlated over the selected period.",
+            xref="paper", yref="paper", x=0.5, y=0.35,
+            showarrow=False, font=dict(size=14, color="#999999"),
+        )
+        fig.update_layout(
+            template="plotly_white",
+            height=220,
+            margin=dict(l=20, r=20, t=30, b=20),
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+        )
         return fig
 
     row_bg  = [_GOOD_BG if p else _BAD_BG  for p in scan_df["passes"]]
@@ -347,20 +381,20 @@ def plot_scan_results(scan_df: pd.DataFrame, universe_name: str) -> go.Figure:
         col_font  = [row_fg, row_fg, row_fg, stat_fg, row_fg, row_fg]
         col_width = [110, 80, 100, 90, 130, 100]
 
+    # Prepend header labels as a styled first row in cells
+    label_fill = ["#e8ecef"] * len(col_headers)
+    label_font = [_NORMAL_FG] * len(col_headers)
+    col_values_with_header = [[h] + v for h, v in zip(col_headers, col_values)]
+    col_fill_with_header   = [[lf] + f for lf, f in zip(label_fill, col_fill)]
+    col_font_with_header   = [[lf] + f for lf, f in zip(label_font, col_font)]
+
     fig = go.Figure(data=[go.Table(
         columnwidth=col_width,
-        header=dict(
-            values=col_headers,
-            fill_color=_HEADER_BG,
-            font=dict(color="white", size=13),
-            align="left",
-            height=38,
-        ),
         cells=dict(
-            values=col_values,
-            fill_color=col_fill,
+            values=col_values_with_header,
+            fill_color=col_fill_with_header,
             align="left",
-            font=dict(color=col_font, size=12),
+            font=dict(color=col_font_with_header, size=12),
             height=32,
         ),
     )])
@@ -370,10 +404,164 @@ def plot_scan_results(scan_df: pd.DataFrame, universe_name: str) -> go.Figure:
         title=dict(
             text=f"Pair Scanner — {universe_name}  ·  {passing}/{n} pairs pass filters",
             font=dict(size=16),
+            yref="container",
+            y=0.98,
+            x=0.02,
+            xanchor="left",
+            yanchor="top",
         ),
-        height=min(max(350, 160 + n * 36), 650),
+        height=min(max(380, 190 + n * 36), 680),
         template="plotly_white",
-        margin=dict(l=20, r=20, t=65, b=20),
+        margin=dict(l=20, r=20, t=80, b=20),
+    )
+    return fig
+
+
+def plot_cascade_results(
+    initial_df: pd.DataFrame,
+    cascade: dict,
+    initial_period: str,
+    universe_name: str,
+) -> go.Figure:
+    """
+    Heatmap-style table showing cointegration stability across time periods.
+
+    Rows are pairs that passed the initial scan. Columns are the initial period
+    plus each sub-period. Each cell shows the ADF p-value, coloured green/yellow/red.
+    A Stability column counts how many periods pass.
+    """
+    from src.analytics.cointegration import _CASCADE_MAP
+    sub_periods = _CASCADE_MAP.get(initial_period, [])
+    all_periods = [initial_period] + sub_periods
+
+    pairs = initial_df[initial_df["passes"]]["pair"].tolist()
+    if not pairs:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No pairs passed the initial scan.",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=20, color="#888888"),
+        )
+        fig.update_layout(template="plotly_white", height=180,
+                          margin=dict(l=20, r=20, t=40, b=20),
+                          xaxis=dict(visible=False), yaxis=dict(visible=False))
+        return fig
+
+    def _cell(pair, period):
+        if period == initial_period:
+            row = initial_df[initial_df["pair"] == pair].iloc[0]
+            return row["adf_pval"], row["passes"]
+        if pair not in cascade or period not in cascade[pair]:
+            return None, None
+        r = cascade[pair][period]
+        return r["adf_pval"], r["passes"]
+
+    def _bg(passes, pval):
+        if passes is None:
+            return "#eeeeee"
+        if passes:
+            return _GOOD_BG
+        if pval is not None and pval < 0.20:
+            return _WARN_BG
+        return _BAD_BG
+
+    def _fg(passes):
+        if passes is None:
+            return "#aaaaaa"
+        return _GOOD_FG if passes else _BAD_FG
+
+    def _label(passes, pval):
+        if passes is None:
+            return "n/a"
+        marker = "✓" if passes else "✗"
+        return f"{pval:.4f}  {marker}"
+
+    pair_col, fill_pair, font_pair = [], [], []
+    period_cols   = {p: [] for p in all_periods}
+    fill_cols     = {p: [] for p in all_periods}
+    font_cols     = {p: [] for p in all_periods}
+    stability_col, fill_stab, font_stab = [], [], []
+
+    for i, pair in enumerate(pairs):
+        row_bg = _ROW_A if i % 2 == 0 else _ROW_B
+        pair_col.append(f"  {pair}")
+        fill_pair.append(row_bg)
+        font_pair.append(_NORMAL_FG)
+
+        n_pass = 0
+        for period in all_periods:
+            pval, passes = _cell(pair, period)
+            period_cols[period].append(_label(passes, pval))
+            fill_cols[period].append(_bg(passes, pval))
+            font_cols[period].append(_fg(passes))
+            if passes:
+                n_pass += 1
+
+        n_total = sum(1 for p in all_periods if _cell(pair, p)[1] is not None)
+        stab_label = f"{n_pass}/{n_total}"
+        stab_bg = _GOOD_BG if n_pass == n_total else _WARN_BG if n_pass > 0 else _BAD_BG
+        stab_fg = _GOOD_FG if n_pass == n_total else _WARN_FG if n_pass > 0 else _BAD_FG
+        stability_col.append(stab_label)
+        fill_stab.append(stab_bg)
+        font_stab.append(stab_fg)
+
+    period_labels = {
+        "3mo": "3 Mo", "6mo": "6 Mo", "1y": "1 Year",
+        "2y": "2 Year", "5y": "5 Year", "10y": "10 Year",
+    }
+    headers = (
+        ["<b>Pair</b>"]
+        + [f"<b>{period_labels.get(p, p)}</b>" for p in all_periods]
+        + ["<b>Stability</b>"]
+    )
+    col_values = (
+        [pair_col]
+        + [period_cols[p] for p in all_periods]
+        + [stability_col]
+    )
+    fill_colors = (
+        [fill_pair]
+        + [fill_cols[p] for p in all_periods]
+        + [fill_stab]
+    )
+    font_colors = (
+        [font_pair]
+        + [font_cols[p] for p in all_periods]
+        + [font_stab]
+    )
+    col_widths = [110] + [100] * len(all_periods) + [90]
+
+    n = len(pairs)
+    label_fill = [["#e8ecef"] * n for _ in headers]
+    label_font = [[_NORMAL_FG] * n for _ in headers]
+    col_values_with_header = [[h] + v for h, v in zip(headers, col_values)]
+    fill_with_header       = [[lf[0]] + f for lf, f in zip(label_fill, fill_colors)]
+    font_with_header       = [[lf[0]] + f for lf, f in zip(label_font, font_colors)]
+
+    fig = go.Figure(data=[go.Table(
+        columnwidth=col_widths,
+        cells=dict(
+            values=col_values_with_header,
+            fill_color=fill_with_header,
+            align="left",
+            font=dict(color=font_with_header, size=12),
+            height=32,
+        ),
+    )])
+
+    fig.update_layout(
+        title=dict(
+            text=f"Cascade Stability — {universe_name}  ·  {n} pair(s) passed {period_labels.get(initial_period, initial_period)} scan",
+            font=dict(size=16),
+            yref="container",
+            y=0.98,
+            x=0.02,
+            xanchor="left",
+            yanchor="top",
+        ),
+        height=min(max(310, 190 + n * 36), 530),
+        template="plotly_white",
+        margin=dict(l=20, r=20, t=80, b=20),
     )
     return fig
 
@@ -407,29 +595,37 @@ def plot_all_dashboard(summary_df: pd.DataFrame) -> go.Figure:
         for c in cols
     ]
 
+    data_values = [summary_df[c].tolist() for c in cols]
+    data_fill   = fill_colors
+    data_font   = font_colors
+    col_values_with_header = [[f"<b>{h}</b>"] + v for h, v in zip(headers, data_values)]
+    fill_with_header       = [["#e8ecef"] + f for f in data_fill]
+    font_with_header       = [[_NORMAL_FG] + f for f in data_font]
+
     fig = go.Figure(data=[go.Table(
         columnwidth=[110, 155, 80, 100, 90, 130, 110, 120, 65, 65, 90],
-        header=dict(
-            values=[f"<b>{h}</b>" for h in headers],
-            fill_color=_HEADER_BG,
-            font=dict(color="white", size=13),
-            align="left",
-            height=38,
-        ),
         cells=dict(
-            values=[summary_df[c].tolist() for c in cols],
-            fill_color=fill_colors,
+            values=col_values_with_header,
+            fill_color=fill_with_header,
             align="left",
-            font=dict(color=font_colors, size=12),
+            font=dict(color=font_with_header, size=12),
             height=32,
         ),
     )])
 
     fig.update_layout(
-        title=dict(text="Pairs Trading  —  All Pairs Summary", font=dict(size=16)),
-        height=max(280, 150 + n * 38),
+        title=dict(
+            text="Pairs Trading  —  All Pairs Summary",
+            font=dict(size=16),
+            yref="container",
+            y=0.98,
+            x=0.02,
+            xanchor="left",
+            yanchor="top",
+        ),
+        height=max(310, 180 + n * 38),
         template="plotly_white",
-        margin=dict(l=20, r=20, t=65, b=20),
+        margin=dict(l=20, r=20, t=80, b=20),
     )
     return fig
 
@@ -776,19 +972,24 @@ def plot_pair_interpretation(
 
     fig = go.Figure(data=[go.Table(
         columnwidth=[180, 160, 520],
-        header=dict(
-            values=["<b>Metric</b>", "<b>Value</b>", "<b>Interpretation</b>"],
-            fill_color=_HEADER_BG,
-            font=dict(color="white", size=13),
-            align="left",
-            height=40,
-        ),
         cells=dict(
-            values=[banner_metric, banner_value, banner_interp],
-            fill_color=[banner_bg_m, banner_bg_v, banner_bg_i],
+            values=[
+                ["<b>Metric</b>"] + banner_metric,
+                ["<b>Value</b>"] + banner_value,
+                ["<b>Interpretation</b>"] + banner_interp,
+            ],
+            fill_color=[
+                ["#e8ecef"] + banner_bg_m,
+                ["#e8ecef"] + banner_bg_v,
+                ["#e8ecef"] + banner_bg_i,
+            ],
             align="left",
             font=dict(
-                color=[banner_fg_m, banner_fg_v, banner_fg_i],
+                color=[
+                    ["#2c3e50"] + banner_fg_m,
+                    ["#2c3e50"] + banner_fg_v,
+                    ["#2c3e50"] + banner_fg_i,
+                ],
                 size=12,
             ),
             height=30,
@@ -885,17 +1086,25 @@ def plot_trade_pnl(trades, ticker_a: str, ticker_b: str) -> go.Figure:
         )
     else:
         colors = [_GREEN if row["pnl"] > 0 else _RED for _, row in trades.iterrows()]
+        trade_nums = list(range(1, len(trades) + 1))
+        hover = [
+            f"Trade #{i}<br>Entry: {row['entry_date']}<br>Exit: {row['exit_date']}<br>"
+            f"Return: {row['pnl_pct']*100:.2f}%<br>P&L: ${row['pnl']:,.0f}<br>Type: {row['exit_type']}"
+            for i, (_, row) in enumerate(trades.iterrows(), start=1)
+        ]
         fig.add_trace(go.Bar(
-            x=trades["entry_date"],
+            x=trade_nums,
             y=trades["pnl_pct"] * 100,
             marker_color=colors,
+            hovertemplate="%{customdata}<extra></extra>",
+            customdata=hover,
             name="Trade Return",
         ))
         fig.add_hline(y=0, line_color="#aaaaaa", line_width=1)
 
     fig.update_layout(
         title=dict(text=f"Per-Trade P&L — {ticker_a} / {ticker_b}", font=dict(size=16)),
-        xaxis_title="Entry Date",
+        xaxis_title="Trade #",
         yaxis_title="Return (%)",
         template="plotly_white",
         height=380,
@@ -963,13 +1172,40 @@ def plot_backtest_metrics(
     row("Sharpe Ratio", _fmt_float(sh),
         "good" if sh > 1.0 else "warn" if sh >= 0.5 else "bad")
 
+    so = metrics["sortino"]
+    row("Sortino Ratio", _fmt_float(so),
+        "good" if so > 1.5 else "warn" if so >= 0.75 else "bad")
+
     md = metrics["max_drawdown"]
     row("Max Drawdown", _fmt_pct(md),
         "good" if md > -0.10 else "warn" if md >= -0.25 else "bad")
 
+    cm = metrics["calmar"]
+    cm_str = _fmt_float(cm) if not (isinstance(cm, float) and math.isnan(cm)) else "n/a"
+    row("Calmar Ratio", cm_str,
+        "good" if not (isinstance(cm, float) and math.isnan(cm)) and cm > 1.0
+        else "warn" if not (isinstance(cm, float) and math.isnan(cm)) and cm >= 0.5
+        else "bad" if not (isinstance(cm, float) and math.isnan(cm)) else None)
+
     section("TRADE STATISTICS")
 
     row("Number of Trades", metrics["n_trades"])
+
+    if not trades.empty:
+        exit_counts = trades["exit_type"].value_counts().to_dict()
+        n_exits        = exit_counts.get("exit", 0)
+        n_zscore_stops = exit_counts.get("stop", 0)
+        n_time_stops   = exit_counts.get("time_stop", 0)
+        n_dollar_stops = exit_counts.get("dollar_stop", 0)
+        n_all_stops    = n_zscore_stops + n_time_stops + n_dollar_stops
+        n_closed       = n_exits + n_all_stops
+        stop_rate      = n_all_stops / n_closed if n_closed > 0 else 0.0
+        row("Normal Exits",    str(n_exits))
+        row("Z-Score Stops",   str(n_zscore_stops))
+        row("Time Stops",      str(n_time_stops))
+        row("Dollar Stops",    str(n_dollar_stops))
+        row("Stop Rate", f"{stop_rate:.0%}  ({n_all_stops}/{n_closed})" if n_closed > 0 else "n/a",
+            "bad" if stop_rate > 0.30 else "warn" if stop_rate > 0.15 else None)
 
     wr = metrics["win_rate"]
     row("Win Rate", _fmt_pct(wr),
@@ -1001,18 +1237,11 @@ def plot_backtest_metrics(
 
     fig = go.Figure(data=[go.Table(
         columnwidth=[220, 200],
-        header=dict(
-            values=["<b>Metric</b>", "<b>Value</b>"],
-            fill_color=_HEADER_BG,
-            font=dict(color="white", size=14),
-            align="left",
-            height=42,
-        ),
         cells=dict(
-            values=[metrics_list, values],
-            fill_color=[bg_left, bg_right],
+            values=[["<b>Metric</b>"] + metrics_list, ["<b>Value</b>"] + values],
+            fill_color=[["#e8ecef"] + bg_left, ["#e8ecef"] + bg_right],
             align="left",
-            font=dict(color=[font_left, font_right], size=12),
+            font=dict(color=[["#2c3e50"] + font_left, ["#2c3e50"] + font_right], size=12),
             height=28,
         ),
     )])
@@ -1208,6 +1437,65 @@ def plot_backtest_interpretation(
                 f"winning trades was offset by ${1/pf:.2f} of losing trades. The mean-reversion "
                 "signal wasn't strong enough to overcome the losing trades in this window.")
 
+    def _interp_sortino(so):
+        if _nan(so) or so == 0.0:
+            return ("neutral", "Sortino ratio could not be computed — equity curve too short or no losing days.")
+        if so > 2.0:
+            return ("good",
+                    f"{so:.2f} — excellent. Only downside volatility is penalized here, so a Sortino "
+                    "above 2 means the strategy's upside swings are large relative to its bad days. "
+                    "This is a better risk-adjusted measure than Sharpe for asymmetric return profiles.")
+        if so > 1.5:
+            return ("good",
+                    f"{so:.2f} — strong. The strategy earns good returns relative to the magnitude "
+                    "of its losing days. If the Sortino is materially higher than the Sharpe, the "
+                    "strategy's volatility is mostly on the upside — a favorable asymmetry.")
+        if so > 0.75:
+            return ("warn",
+                    f"{so:.2f} — acceptable. Downside risk is being reasonably compensated but "
+                    "the margin is thin. Check whether losing days cluster together (consecutive "
+                    "drawdown) or are isolated, as the former is harder to hold through.")
+        if so > 0:
+            return ("warn",
+                    f"{so:.2f} — weak. The strategy is positive but barely compensates for the "
+                    "pain of its worst days. A higher z_entry threshold or better pair selection "
+                    "might improve the downside profile.")
+        return ("bad",
+                f"{so:.2f} — negative. Losing days outweigh winning days on a magnitude basis. "
+                "The mean-reversion signal was not strong enough to overcome the downside moves "
+                "in this period.")
+
+    def _interp_calmar(cm, md):
+        if _nan(cm):
+            return ("neutral",
+                    "Calmar ratio is undefined — either no drawdown occurred (all trades profitable) "
+                    "or the strategy had no completed trades.")
+        md_abs = abs(md)
+        if cm > 2.0:
+            return ("good",
+                    f"{cm:.2f} — excellent. The strategy earned {cm:.1f}x its maximum drawdown in "
+                    f"annualized returns. A Calmar above 2 is strong; it means recovering from the "
+                    f"worst peak-to-trough drop of {md_abs:.1%} would take less than 6 months at this CAGR.")
+        if cm > 1.0:
+            return ("good",
+                    f"{cm:.2f} — solid. CAGR exceeds the max drawdown, meaning you recoup the worst "
+                    f"loss ({md_abs:.1%}) within roughly a year at the current growth rate. Typical "
+                    "threshold for institutional strategies is Calmar ≥ 1.")
+        if cm > 0.5:
+            return ("warn",
+                    f"{cm:.2f} — moderate. It would take roughly {1/cm:.1f} years at this CAGR to "
+                    f"recover the maximum drawdown of {md_abs:.1%}. Acceptable for a longer-horizon "
+                    "strategy, but uncomfortable for a short-cycle pairs strategy.")
+        if cm > 0:
+            return ("warn",
+                    f"{cm:.2f} — weak. The max drawdown ({md_abs:.1%}) is large relative to the "
+                    "annual return. Recovery from the worst period would take multiple years. "
+                    "Position sizing or tighter stops should be considered.")
+        return ("bad",
+                f"{cm:.2f} — negative CAGR with a meaningful drawdown. Capital is being eroded "
+                f"with no upward trend to offset the losses. The pair did not behave as "
+                "a mean-reverting system over this window.")
+
     def _interp_hold_days(ahd, hl):
         if _nan(ahd):
             return ("neutral", "No completed trades — average hold period cannot be calculated.")
@@ -1261,7 +1549,9 @@ def plot_backtest_interpretation(
         "total_return":  _interp_total_return(tr, period),
         "cagr":          _interp_cagr(metrics["cagr"]),
         "sharpe":        _interp_sharpe(sh),
+        "sortino":       _interp_sortino(metrics["sortino"]),
         "max_drawdown":  _interp_drawdown(metrics["max_drawdown"]),
+        "calmar":        _interp_calmar(metrics["calmar"], metrics["max_drawdown"]),
         "win_rate":      _interp_win_rate(metrics["win_rate"], avg_win, avg_loss),
         "profit_factor": _interp_profit_factor(pf),
         "avg_hold_days": _interp_hold_days(metrics["avg_hold_days"], half_life),
@@ -1303,7 +1593,10 @@ def plot_backtest_interpretation(
     row("Total Return",   _fmt_pct(tr),                      "total_return")
     row("CAGR",          _fmt_pct(metrics["cagr"]),          "cagr")
     row("Sharpe Ratio",  _fmt_float(sh),                     "sharpe")
+    row("Sortino Ratio", _fmt_float(metrics["sortino"]),     "sortino")
     row("Max Drawdown",  _fmt_pct(metrics["max_drawdown"]),  "max_drawdown")
+    cm = metrics["calmar"]
+    row("Calmar Ratio",  _fmt_float(cm) if not _nan(cm) else "n/a", "calmar")
 
     section("TRADE QUALITY")
     row("Win Rate",       _fmt_pct(metrics["win_rate"]),     "win_rate")
@@ -1328,18 +1621,23 @@ def plot_backtest_interpretation(
 
     fig = go.Figure(data=[go.Table(
         columnwidth=[160, 120, 560],
-        header=dict(
-            values=["<b>Metric</b>", "<b>Value</b>", "<b>What This Means</b>"],
-            fill_color=_HEADER_BG,
-            font=dict(color="white", size=13),
-            align="left",
-            height=40,
-        ),
         cells=dict(
-            values=[banner_m, banner_v, banner_i],
-            fill_color=[banner_bg_m, banner_bg_v, banner_bg_i],
+            values=[
+                ["<b>Metric</b>"] + banner_m,
+                ["<b>Value</b>"] + banner_v,
+                ["<b>What This Means</b>"] + banner_i,
+            ],
+            fill_color=[
+                ["#e8ecef"] + banner_bg_m,
+                ["#e8ecef"] + banner_bg_v,
+                ["#e8ecef"] + banner_bg_i,
+            ],
             align="left",
-            font=dict(color=[banner_fg_m, banner_fg_v, banner_fg_i], size=12),
+            font=dict(color=[
+                ["#2c3e50"] + banner_fg_m,
+                ["#2c3e50"] + banner_fg_v,
+                ["#2c3e50"] + banner_fg_i,
+            ], size=12),
             height=32,
         ),
     )])
