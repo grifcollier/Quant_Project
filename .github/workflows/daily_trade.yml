@@ -29,6 +29,4 @@ jobs:
           ALPACA_SECRET_KEY:  ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_PAPER_KEY:   ${{ secrets.ALPACA_PAPER_KEY }}
           ALPACA_PAPER_SECRET: ${{ secrets.ALPACA_PAPER_SECRET }}
-        run: python scripts/daily_trade.py
-        # Change to: python scripts/daily_trade.py --execute
-        # once you've confirmed signals look correct
+        run: python scripts/daily_trade.py --execute
