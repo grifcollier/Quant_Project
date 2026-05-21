@@ -41,23 +41,30 @@ def vol_targeted_weights(
     tau: float = 0.20,
     vol_span: int = 25,
     weight_cap: float = None,
+    corr_adjust: bool = False,
 ) -> pd.DataFrame:
     """
-    Convert binary ±1 direction signals to vol-targeted weights.
+    Convert direction signals to vol-targeted weights.
 
-    weight_i = direction_i × tau / (sigma_i × N_active)
+    Default (corr_adjust=False):
+        weight_i = direction_i × tau / (sigma_i × N_active)
+        Each active instrument receives an equal share of the vol budget tau.
+        Assumes zero pairwise correlation — over-allocates when instruments are correlated.
 
-    Each active instrument receives an equal share of the portfolio vol budget tau.
-    With perfectly correlated instruments the gross exposure targets tau;
-    with diversification, realised portfolio vol will be lower.
+    With corr_adjust=True:
+        Computes the realised portfolio vol of the default weights using a longer EWM
+        window, then rescales to hit tau. This corrects for correlation concentration
+        (e.g. 5 correlated equity ETFs all signalling long at once).
 
     Parameters
     ----------
-    positions_df : binary {-1, 0, +1} directions, indexed by date.
+    positions_df : direction signals (binary {-1,0,+1} or continuous [-1,+1]).
     prices_df    : closing prices aligned to positions_df.index.
     tau          : annualised portfolio vol target (e.g. 0.20 = 20%).
     vol_span     : EWM span for per-instrument daily-return std (default 25 days).
     weight_cap   : optional per-instrument weight cap (e.g. 0.40 = 40% of capital).
+    corr_adjust  : if True, rescale weights so portfolio vol tracks tau rather than
+                   assuming zero inter-instrument correlation.
     """
     px = prices_df.reindex(positions_df.index)
     n_active = positions_df.abs().sum(axis=1).replace(0, np.nan)
@@ -68,6 +75,18 @@ def vol_targeted_weights(
     ).ffill().replace(0, np.nan)
 
     weights = positions_df * tau / (vol_df.mul(n_active, axis=0))
+
+    if corr_adjust:
+        returns = px.pct_change().fillna(0.0)
+        # Realised portfolio return stream under the base weights (use lagged weights)
+        port_ret = (weights.shift(1).fillna(0.0) * returns).sum(axis=1)
+        # Longer window for portfolio-level vol (63 days ≈ quarterly) for stability
+        port_vol = port_ret.ewm(span=max(vol_span * 3, 63)).std() * np.sqrt(252)
+        port_vol = port_vol.replace(0, np.nan)
+        # Scale factor: how much to multiply weights to hit tau
+        # Clipped to [0.5, 3.0] to prevent extreme leverage swings
+        scale = (tau / port_vol).clip(0.5, 3.0)
+        weights = weights.mul(scale, axis=0)
 
     if weight_cap is not None:
         weights = weights.clip(-abs(weight_cap), abs(weight_cap))

@@ -63,4 +63,63 @@ SCAN_UNIVERSES = {
         # Materials — metals, mining, steel
         "NEM", "FCX", "NUE", "STLD", "AA",
     ],
+
+    # ── Broad S&P 500 universe (~230 liquid names across all sectors) ──────────
+    # Produces ~26,000 candidate pairs; correlation filter (default 0.80) trims
+    # to ~300-800 before ADF testing. Expect 3-8 minutes on a 3y period.
+    # Use --data-provider alpaca for faster, more reliable bulk fetching.
+    "sp500": [
+        # Financials — banks, brokers, custodians, exchanges, insurance
+        "GS", "MS", "JPM", "BAC", "C", "WFC", "BLK", "SCHW",
+        "AXP", "COF", "USB", "PNC", "TFC", "FITB", "HBAN", "KEY", "RF",
+        "SPGI", "MCO", "ICE", "CME", "BK", "STT",
+        "TRV", "AIG", "MET", "PRU", "ALL", "CB", "MMC", "AON",
+        # Energy — majors, refiners, E&P, midstream, services
+        "XOM", "CVX", "COP", "SLB", "EOG", "PSX", "VLO", "MPC",
+        "OXY", "HAL", "BKR", "DVN", "HES", "MRO", "APA", "CTRA",
+        "WMB", "OKE", "TRGP", "KMI",
+        # Technology — mega-cap, semis, software, hardware, storage
+        "MSFT", "AAPL", "NVDA", "GOOGL", "META", "AMZN",
+        "AMD", "INTC", "QCOM", "TXN", "AVGO", "MU", "AMAT", "LRCX", "KLAC",
+        "CRM", "ORCL", "CSCO", "IBM", "ACN", "INTU", "NOW", "WDAY", "ADSK",
+        "CDNS", "SNPS", "ANSS", "FTNT", "PANW",
+        "HPQ", "HPE", "WDC", "STX",
+        # Consumer Staples — beverages, food, tobacco, HPC
+        "KO", "PEP", "PG", "CL", "KMB", "GIS", "CAG",
+        "HSY", "MDLZ", "MO", "PM", "STZ", "TAP",
+        "CPB", "K", "SJM", "HRL", "TSN", "MKC",
+        # Healthcare — pharma, biotech, managed care, devices, distributors
+        "JNJ", "PFE", "MRK", "ABBV", "LLY", "BMY", "AMGN", "GILD",
+        "REGN", "VRTX", "BIIB",
+        "UNH", "HUM", "CI", "MOH", "CNC",
+        "CVS", "MCK", "ABC",
+        "MDT", "BSX", "EW", "ISRG", "SYK", "BDX", "BAX", "ZBH",
+        "TMO", "DHR", "A", "IQV",
+        # Industrials — defense, aero, machinery, transport, waste
+        "BA", "LMT", "RTX", "NOC", "GD",
+        "HON", "GE", "MMM", "EMR", "ETN", "PH", "ROK", "IR", "ITW", "SWK",
+        "CAT", "DE",
+        "UPS", "FDX", "CSX", "UNP", "NSC",
+        "WM", "RSG", "CTAS",
+        # Consumer Discretionary — retail, restaurants, autos, travel
+        "WMT", "COST", "TGT", "HD", "LOW",
+        "MCD", "SBUX", "YUM", "DRI", "CMG",
+        "NKE", "TJX", "ROST",
+        "BKNG", "EXPE",
+        "GM", "F", "TSLA", "APTV",
+        "MGM", "LVS", "HLT", "MAR",
+        # Airlines
+        "DAL", "UAL", "AAL", "LUV", "ALK",
+        # Communication Services — streaming, media, telecom
+        "NFLX", "DIS", "CMCSA", "CHTR",
+        "VZ", "T", "TMUS",
+        # Materials — chemicals, metals, mining, steel
+        "LIN", "APD", "DD", "DOW", "LYB", "EMN",
+        "SHW", "PPG",
+        "NEM", "FCX", "AA", "NUE", "STLD", "CLF",
+        # Utilities
+        "NEE", "DUK", "SO", "AEP", "EXC", "SRE", "PEG", "WEC",
+        # REITs
+        "AMT", "PLD", "CCI", "EQIX", "PSA", "DLR", "O", "SPG",
+    ],
 }

@@ -220,3 +220,135 @@ def plot_pca_positions(
     fig.update_xaxes(showgrid=True, gridcolor=_GRID)
     fig.update_yaxes(gridcolor=_GRID)
     return fig
+
+
+def plot_pca_walk_forward(
+    stitched_equity: pd.DataFrame,
+    fold_metrics: list,
+    overall_metrics: dict,
+    params: dict,
+) -> go.Figure:
+    """Walk-forward summary: stitched OOS equity, drawdown, per-fold Sharpe bars, metrics table."""
+    equity   = stitched_equity["equity"]
+    drawdown = (equity / equity.cummax() - 1) * 100
+    starting = float(equity.iloc[0])
+
+    fig = make_subplots(
+        rows=3, cols=2,
+        row_heights=[0.42, 0.22, 0.36],
+        column_widths=[0.62, 0.38],
+        shared_xaxes=False,
+        specs=[
+            [{"rowspan": 1}, {"rowspan": 3, "type": "table"}],
+            [{}             , None],
+            [{}             , None],
+        ],
+        subplot_titles=["Stitched OOS Equity", "", "Drawdown (%)", "Sharpe by Fold"],
+        vertical_spacing=0.07,
+    )
+
+    fig.add_trace(go.Scatter(
+        x=equity.index.tolist(), y=equity.values,
+        mode="lines", name="OOS Equity",
+        line=dict(color=_GREEN, width=2),
+    ), row=1, col=1)
+    fig.add_hline(y=starting, line_dash="dash", line_color=_SUBTEXT, line_width=1, row=1, col=1)
+
+    for fm in fold_metrics[:-1]:
+        fig.add_vline(x=fm["end"], line_dash="dot", line_color=_AMBER, line_width=1.2, row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=drawdown.index.tolist(), y=drawdown.values,
+        mode="lines", fill="tozeroy",
+        line=dict(color=_RED, width=1),
+        fillcolor="rgba(214,39,40,0.25)",
+        name="Drawdown", showlegend=False,
+    ), row=2, col=1)
+
+    fold_xlabels = [f"F{fm['fold']} {fm['start'].strftime('%b%y')}" for fm in fold_metrics]
+    fold_sharpes = [float(fm.get("sharpe", 0)) for fm in fold_metrics]
+    bar_colors   = [_GREEN if s > 1.0 else (_AMBER if s > 0 else _RED) for s in fold_sharpes]
+
+    fig.add_trace(go.Bar(
+        x=fold_xlabels, y=fold_sharpes,
+        marker_color=bar_colors, showlegend=False,
+        text=[f"{s:.2f}" for s in fold_sharpes],
+        textposition="outside",
+    ), row=3, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color=_SUBTEXT, line_width=1, row=3, col=1)
+
+    all_metrics = [overall_metrics] + fold_metrics
+    col_labels  = ["Overall"] + [f"F{fm['fold']}" for fm in fold_metrics]
+
+    def _fmt(v, pct=False):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return "n/a"
+        return f"{v:.1%}" if pct else f"{v:.2f}"
+
+    def _hl(v, hi, lo=None, invert=False):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return _ROW_A
+        good = (v > hi) if not invert else (v < hi)
+        warn = (v > lo) if lo is not None and not invert else (v < lo if lo else False)
+        return _GOOD_BG if good else (_WARN_BG if warn else _BAD_BG)
+
+    rows_spec = [
+        ("Period",  lambda m: (
+            (f"{m['start'].strftime('%b%y')}-{m['end'].strftime('%b%y')}"
+             if "start" in m else "--"), _ROW_A)),
+        ("Return",  lambda m: (_fmt(m.get("total_return"), pct=True),
+                                _hl(m.get("total_return"), 0.05, 0))),
+        ("Sharpe",  lambda m: (_fmt(m.get("sharpe")),
+                                _hl(m.get("sharpe"), 1.0, 0.5))),
+        ("Sortino", lambda m: (_fmt(m.get("sortino")),
+                                _hl(m.get("sortino"), 1.5, 0.75))),
+        ("Max DD",  lambda m: (_fmt(m.get("max_drawdown"), pct=True),
+                                _hl(m.get("max_drawdown"), -0.10, -0.25, invert=True))),
+    ]
+
+    col_data = {"Metric": [r[0] for r in rows_spec]}
+    col_bg   = {"Metric": [_ROW_A if i % 2 == 0 else _ROW_B for i in range(len(rows_spec))]}
+
+    for label, m in zip(col_labels, all_metrics):
+        vals, bgs = [], []
+        for _, fn in rows_spec:
+            v, bg = fn(m)
+            vals.append(v)
+            bgs.append(bg)
+        col_data[label] = vals
+        col_bg[label]   = bgs
+
+    header_vals = list(col_data.keys())
+    fig.add_trace(go.Table(
+        header=dict(
+            values=header_vals,
+            fill_color=_HEADER_BG,
+            font=dict(color="white", size=9, family="Inter, sans-serif"),
+            align="left", height=24,
+        ),
+        cells=dict(
+            values=[col_data[h] for h in header_vals],
+            fill_color=[col_bg[h] for h in header_vals],
+            font=dict(color=_TEXT, size=9, family="Inter, sans-serif"),
+            align="left", height=22,
+        ),
+    ), row=1, col=2)
+
+    n_folds      = len(fold_metrics)
+    universe     = params.get("universe", "")
+    period_label = params.get("period", "")
+
+    fig.update_layout(
+        title=dict(
+            text=f"PCA Walk-Forward ({n_folds} folds × 1y)  |  {universe}  |  {period_label}",
+            font=dict(size=16, color=_TEXT),
+        ),
+        height=740,
+        template="plotly_white",
+        hovermode="x unified",
+        showlegend=False,
+        margin=dict(l=60, r=30, t=70, b=40),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor=_GRID)
+    fig.update_yaxes(gridcolor=_GRID)
+    return fig

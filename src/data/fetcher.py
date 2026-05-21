@@ -83,14 +83,19 @@ def fetch_prices_bulk(
     tickers: list,
     period: str,
     interval: str = "1d",
+    provider: str = "yfinance",
 ) -> dict:
     """
     Fetch closing prices for many tickers efficiently.
 
-    Serves from per-ticker cache where available and batch-downloads the rest
-    in a single yfinance call (much faster than one request per ticker).
+    provider="yfinance" (default): serves from per-ticker CSV cache, batch-downloads missing.
+    provider="alpaca": uses Alpaca Market Data API (requires ALPACA_API_KEY / ALPACA_SECRET_KEY).
+
     Returns {ticker: pd.Series of closing prices}. Tickers that fail are omitted.
     """
+    if provider == "alpaca":
+        from src.data.alpaca_fetcher import fetch_prices_bulk_alpaca
+        return fetch_prices_bulk_alpaca(tickers, period=period, interval=interval)
     prices = {}
     to_download = []
 
@@ -137,6 +142,31 @@ def fetch_prices_bulk(
                 prices[ticker] = s
 
     return prices
+
+
+def fetch_ohlcv_bulk(
+    tickers: list,
+    period: str,
+    interval: str = "1d",
+    provider: str = "yfinance",
+) -> dict:
+    """
+    Fetch full OHLCV DataFrames for many tickers.
+
+    Returns {ticker: pd.DataFrame with columns [open,high,low,close,volume]}.
+    Separate from fetch_prices_bulk() to keep existing callers unchanged.
+    """
+    if provider == "alpaca":
+        from src.data.alpaca_fetcher import fetch_ohlcv_bulk_alpaca
+        return fetch_ohlcv_bulk_alpaca(tickers, period=period, interval=interval)
+
+    result = {}
+    for ticker in tickers:
+        try:
+            result[ticker] = fetch_ohlcv(ticker, period=period, interval=interval)
+        except Exception:
+            pass
+    return result
 
 
 def fetch_pair_ohlcv(

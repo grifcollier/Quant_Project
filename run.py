@@ -49,7 +49,9 @@ def _run_pairs(args):
                       kalman_delta=args.kalman_delta,
                       max_hold_days=args.max_hold_days,
                       dollar_stop_pct=args.dollar_stop,
-                      test_period=args.test_period)
+                      test_period=args.test_period,
+                      walk_forward=getattr(args, "walk_forward", None),
+                      data_provider=getattr(args, "data_provider", "yfinance"))
 
 
 _PERIOD_BARS = {
@@ -61,11 +63,21 @@ def _pairs_single(
     ticker_a, ticker_b, period, window, z_entry, z_exit, z_stop,
     backtest=False, kalman_delta=1e-4,
     max_hold_days=0, dollar_stop_pct=5.0,
-    test_period=None,
+    test_period=None, walk_forward=None,
+    data_provider="yfinance",
 ):
-    print(f"Fetching {ticker_a}/{ticker_b}...")
+    print(f"Fetching {ticker_a}/{ticker_b} via {data_provider}...")
 
-    df = fetch_pair(ticker_a, ticker_b, period=period)
+    if data_provider == "alpaca":
+        from src.data.fetcher import fetch_prices_bulk
+        prices = fetch_prices_bulk([ticker_a, ticker_b], period=period, provider="alpaca")
+        if ticker_a not in prices or ticker_b not in prices:
+            print("ERROR: Could not fetch one or both tickers from Alpaca.")
+            return
+        df = pd.DataFrame({"close_a": prices[ticker_a], "close_b": prices[ticker_b]}).dropna()
+        df.index.name = "date"
+    else:
+        df = fetch_pair(ticker_a, ticker_b, period=period)
     if df.empty:
         print("ERROR: No data returned.")
         return
@@ -136,16 +148,30 @@ def _pairs_single(
                            split_date=split_date),
           f"{pair} — Charts")
 
-    if backtest:
+    if backtest or walk_forward:
         from src.data.fetcher import fetch_pair_ohlcv
         from src.strategies.pairs.backtest import run_pairs_backtest
         from src.strategies.pairs.viz import (
             plot_equity_curve, plot_trade_pnl, plot_backtest_metrics,
             plot_backtest_interpretation,
         )
-        print("Running backtest...")
         from src.analytics.market_beta import compute_market_beta
-        df_ohlcv = fetch_pair_ohlcv(ticker_a, ticker_b, period=period)
+        if data_provider == "alpaca":
+            from src.data.alpaca_fetcher import fetch_ohlcv_bulk_alpaca
+            ohlcv_dict = fetch_ohlcv_bulk_alpaca([ticker_a, ticker_b], period=period)
+            _oa = ohlcv_dict.get(ticker_a, pd.DataFrame())
+            _ob = ohlcv_dict.get(ticker_b, pd.DataFrame())
+            _idx = _oa.index.intersection(_ob.index)
+            df_ohlcv = pd.DataFrame({
+                "open_a": _oa.loc[_idx, "open"], "high_a": _oa.loc[_idx, "high"],
+                "low_a":  _oa.loc[_idx, "low"],  "close_a": _oa.loc[_idx, "close"],
+                "volume_a": _oa.loc[_idx, "volume"],
+                "open_b": _ob.loc[_idx, "open"], "high_b": _ob.loc[_idx, "high"],
+                "low_b":  _ob.loc[_idx, "low"],  "close_b": _ob.loc[_idx, "close"],
+                "volume_b": _ob.loc[_idx, "volume"],
+            })
+        else:
+            df_ohlcv = fetch_pair_ohlcv(ticker_a, ticker_b, period=period)
         df_ohlcv = df_ohlcv.loc[df_ohlcv.index.isin(spread.index)]
         try:
             spy = fetch_price("SPY", period=period)
@@ -155,7 +181,69 @@ def _pairs_single(
         except Exception:
             market_beta_a = market_beta_b = None
 
-        # Restrict backtest execution to the test window only
+        # ── Walk-forward mode ─────────────────────────────────────────────────
+        if walk_forward:
+            from src.backtest.engine import run_backtest
+            from src.backtest.metrics import compute_metrics
+            fold_bars = 252
+            T = len(signals)
+            fold_starts_wf, fold_ends_wf = [], []
+            for k in range(walk_forward):
+                start_idx = T - (walk_forward - k) * fold_bars
+                end_idx   = min(T - (walk_forward - k - 1) * fold_bars, T) - 1
+                if start_idx < 30:
+                    continue
+                fold_starts_wf.append(signals.index[start_idx])
+                fold_ends_wf.append(signals.index[end_idx])
+
+            if not fold_starts_wf:
+                print("ERROR: Not enough data for walk-forward folds.")
+                return
+
+            print(f"\nRunning walk-forward validation ({len(fold_starts_wf)} folds × 1y)...")
+            all_trades, fold_results = [], []
+            starting_capital = 20_000.0
+            for i, (fs, fe) in enumerate(zip(fold_starts_wf, fold_ends_wf), 1):
+                sig_f    = signals.loc[fs:fe]
+                ohlcv_f  = df_ohlcv.loc[fs:fe]
+                beta_f   = beta.loc[fs:fe]
+                mba_f = market_beta_a.loc[fs:fe] if market_beta_a is not None else None
+                mbb_f = market_beta_b.loc[fs:fe] if market_beta_b is not None else None
+                t, eq, m = run_pairs_backtest(
+                    ticker_a, ticker_b, sig_f, ohlcv_f, beta_f,
+                    capital_per_leg=10_000.0,
+                    market_beta_a=mba_f, market_beta_b=mbb_f,
+                    max_hold_bars=max_hold_bars, max_loss_pct=max_loss_pct,
+                )
+                fold_results.append({
+                    "fold": i, "start": fs, "end": fe,
+                    "n_trades": m["n_trades"],
+                    "total_return": m["total_return"],
+                    "sharpe": m["sharpe"],
+                    "max_drawdown": m["max_drawdown"],
+                })
+                all_trades.append(t)
+                print(f"  Fold {i} ({fs.date()} to {fe.date()}): "
+                      f"{m['n_trades']} trades  |  "
+                      f"{m['total_return']:.1%} return  |  "
+                      f"Sharpe {m['sharpe']:.2f}")
+
+            all_trades_df = pd.concat(all_trades) if all_trades else pd.DataFrame()
+            n_total = int(sum(r["n_trades"] for r in fold_results))
+            mean_ret = sum(r["total_return"] for r in fold_results) / len(fold_results)
+            mean_sharpe = sum(r["sharpe"] for r in fold_results) / len(fold_results)
+            print(f"\nWalk-Forward ({len(fold_results)} folds): "
+                  f"{n_total} total trades  |  "
+                  f"{mean_ret:.1%} avg fold return  |  "
+                  f"Sharpe {mean_sharpe:.2f} avg")
+
+            if not all_trades_df.empty:
+                _show(plot_trade_pnl(all_trades_df, ticker_a, ticker_b),
+                      f"{pair} — Walk-Forward Trade P&L")
+            return
+
+        # ── Single backtest (with optional test-period split) ─────────────────
+        print("Running backtest...")
         if split_date is not None:
             signals_bt      = signals.loc[signals.index >= split_date]
             df_ohlcv_bt     = df_ohlcv.loc[df_ohlcv.index >= split_date]
@@ -223,10 +311,11 @@ def _pairs_scan(args):
         universe_name = "Configured Pairs"
 
     # ── Fetch prices (bulk for speed) ─────────────────────────────────────────
+    provider = getattr(args, "data_provider", "yfinance")
     n_total_pairs = len(tickers) * (len(tickers) - 1) // 2
-    print(f"Fetching {len(tickers)} tickers ({period})...  "
+    print(f"Fetching {len(tickers)} tickers ({period}) via {provider}...  "
           f"[{n_total_pairs} possible pairs]")
-    prices = fetch_prices_bulk(tickers, period=period)
+    prices = fetch_prices_bulk(tickers, period=period, provider=provider)
     failed = len(tickers) - len(prices)
     if failed:
         print(f"  WARNING: {failed} ticker(s) could not be fetched and will be skipped.")
@@ -239,6 +328,9 @@ def _pairs_scan(args):
     )
 
     passing = int(scan_df["passes"].sum()) if not scan_df.empty else 0
+
+    if not scan_df.empty and "correlation" in scan_df.columns:
+        scan_df = scan_df.sort_values(["passes", "adf_pval"], ascending=[False, True]).reset_index(drop=True)
 
     # ── Terminal results table ────────────────────────────────────────────────
     COL = {"pair": 10, "corr": 6, "beta": 8, "adf_pval": 11, "stationary": 12, "half_life": 13, "passes": 8}
@@ -358,11 +450,18 @@ def _register_pairs(subparsers):
                         help="Hold out the most recent PERIOD as an out-of-sample test window. "
                              "ADF, half-life, and rolling window are calibrated on the earlier data only. "
                              "Backtest runs on the test window. Example: --period 5y --test-period 1y")
+    parser.add_argument("--walk-forward", default=None, type=int, metavar="N",
+                        dest="walk_forward",
+                        help="Run N non-overlapping 1-year OOS folds (requires --backtest; overrides --test-period)")
     parser.add_argument("--max-hold-days", type=int, default=0, metavar="N",
                         help="Time stop: close trade if still open after N days (default: 0 = auto, 3× half-life).")
     parser.add_argument("--dollar-stop", type=float, default=5.0, metavar="PCT",
                         help="Dollar stop: close trade if unrealised loss exceeds PCT%% of capital (default: 5.0). "
                              "Set to 0 to disable.")
+    parser.add_argument("--data-provider", default="yfinance", metavar="PROVIDER",
+                        choices=["yfinance", "alpaca"], dest="data_provider",
+                        help="Price data source: yfinance (default) or alpaca "
+                             "(requires ALPACA_API_KEY + ALPACA_SECRET_KEY).")
     parser.set_defaults(func=_run_pairs)
 
 
@@ -370,8 +469,11 @@ def _run_pca(args):
     from src.data.fetcher import fetch_prices_bulk
     from src.analytics.pca import rolling_pca_residuals
     from src.strategies.pca.signals import generate_pca_signals
-    from src.strategies.pca.viz import plot_pca_equity, plot_pca_zscore_heatmap, plot_pca_positions
-    from src.backtest.portfolio_engine import run_portfolio_backtest
+    from src.strategies.pca.viz import (
+        plot_pca_equity, plot_pca_zscore_heatmap, plot_pca_positions,
+        plot_pca_walk_forward,
+    )
+    from src.backtest.portfolio_engine import run_portfolio_backtest, _compute_metrics
 
     universe_name = args.universe.lower()
     if universe_name not in SCAN_UNIVERSES:
@@ -381,9 +483,11 @@ def _run_pca(args):
     tickers = SCAN_UNIVERSES[universe_name]
     period  = args.period
     window  = args.window
+    n_folds = getattr(args, "walk_forward", None)
 
-    print(f"Fetching {len(tickers)} tickers ({period})...")
-    prices_dict = fetch_prices_bulk(tickers, period=period)
+    provider = getattr(args, "data_provider", "yfinance")
+    print(f"Fetching {len(tickers)} tickers ({period}, provider={provider})...")
+    prices_dict = fetch_prices_bulk(tickers, period=period, provider=provider)
     if len(prices_dict) < 3:
         print("ERROR: Need at least 3 tickers with data.")
         sys.exit(1)
@@ -392,6 +496,74 @@ def _run_pca(args):
     print(f"Aligned {prices_df.shape[1]} tickers over {len(prices_df)} bars.")
 
     returns_df = prices_df.pct_change().dropna()
+
+    params = {
+        "period": period, "window": window, "universe": universe_name.capitalize(),
+        "n_factors": args.n_factors, "top_n": args.top_n,
+        "z_entry": args.z_entry, "z_exit": args.z_exit, "z_stop": args.z_stop,
+        "cost_bps": args.cost_bps,
+    }
+    universe_label = universe_name.capitalize()
+
+    # ── Walk-forward mode ─────────────────────────────────────────────────────
+    if n_folds:
+        fold_bars = 252
+        T = len(returns_df)
+        fold_starts, fold_ends = [], []
+        for k in range(n_folds):
+            start_idx = T - (n_folds - k) * fold_bars
+            end_idx   = min(T - (n_folds - k - 1) * fold_bars, T) - 1
+            if start_idx < window + 10:
+                continue
+            fold_starts.append(returns_df.index[start_idx])
+            fold_ends.append(returns_df.index[end_idx])
+
+        if not fold_starts:
+            print("ERROR: Not enough data for walk-forward folds. Use --period 5y or longer.")
+            sys.exit(1)
+
+        print(f"Computing rolling PCA residuals on full history (window={window}, k={args.n_factors})...")
+        residuals_df = rolling_pca_residuals(returns_df, window=window, n_components=args.n_factors)
+
+        print(f"Generating signals on full history (z_entry={args.z_entry}, top_n={args.top_n})...")
+        positions_df, z_scores_df = generate_pca_signals(
+            residuals_df, window=window,
+            z_entry=args.z_entry, z_exit=args.z_exit, z_stop=args.z_stop,
+            top_n=args.top_n,
+        )
+
+        print(f"\nRunning walk-forward validation ({len(fold_starts)} folds × 1y)...")
+        equity_pieces, fold_metrics = [], []
+        for i, (fs, fe) in enumerate(zip(fold_starts, fold_ends), 1):
+            prices_fold    = prices_df.loc[fs:fe]
+            positions_fold = positions_df.loc[fs:fe]
+            eq, m = run_portfolio_backtest(
+                positions_fold, prices_fold, capital=20_000.0, cost_bps=args.cost_bps,
+            )
+            m["fold"]  = i
+            m["start"] = fs
+            m["end"]   = fe
+            fold_metrics.append(m)
+            equity_pieces.append(eq)
+            print(f"  Fold {i} ({fs.date()} to {fe.date()}): "
+                  f"{m['total_return']:.1%} return  |  Sharpe {m['sharpe']:.2f}")
+
+        stitched = pd.concat(equity_pieces)
+        stitched = stitched[~stitched.index.duplicated(keep="first")]
+        overall  = _compute_metrics(stitched, float(stitched["equity"].iloc[0]))
+        overall["start"] = fold_starts[0]
+        overall["end"]   = fold_ends[-1]
+
+        total_ret    = (stitched["equity"].iloc[-1] / stitched["equity"].iloc[0]) - 1
+        print(f"\nWalk-Forward ({len(fold_starts)} folds): "
+              f"{total_ret:.1%} return  |  "
+              f"Sharpe {overall['sharpe']:.2f}  |  "
+              f"Max DD {overall['max_drawdown']:.1%}")
+
+        print("Opening windows...")
+        _show(plot_pca_walk_forward(stitched, fold_metrics, overall, params),
+              f"PCA — {universe_label} — Walk-Forward")
+        return
 
     # ── Train/test split ──────────────────────────────────────────────────────
     split_date  = None
@@ -437,13 +609,7 @@ def _run_pca(args):
         f"Max DD {bt_metrics['max_drawdown']:.1%}"
     )
 
-    params = {
-        "period": period, "window": window,
-        "n_factors": args.n_factors, "top_n": args.top_n,
-        "z_entry": args.z_entry, "z_exit": args.z_exit, "z_stop": args.z_stop,
-        "cost_bps": args.cost_bps, "test_period": test_period,
-    }
-    universe_label = universe_name.capitalize()
+    params["test_period"] = test_period
 
     print("Opening windows...")
     _show(plot_pca_equity(equity_curve, bt_metrics, universe_label, params),
@@ -459,6 +625,9 @@ def _register_pca(subparsers):
     parser.add_argument("--universe", required=True, metavar="NAME",
                         help=f"Named universe from config. Options: {', '.join(SCAN_UNIVERSES)}")
     parser.add_argument("--period",    default="2y",  help="Data lookback (default: 2y)")
+    parser.add_argument("--walk-forward", default=None, type=int, metavar="N",
+                        dest="walk_forward",
+                        help="Run N non-overlapping 1-year OOS folds (overrides --test-period)")
     parser.add_argument("--window",    default=60, type=int,
                         help="Rolling window for PCA and z-scoring (default: 60)")
     parser.add_argument("--n-factors", default=3,  type=int, metavar="K",
@@ -476,6 +645,9 @@ def _register_pca(subparsers):
     parser.add_argument("--test-period", default=None, metavar="PERIOD",
                         choices=["3mo", "6mo", "1y", "2y"],
                         help="Hold out the most recent PERIOD as out-of-sample test window.")
+    parser.add_argument("--data-provider", default="yfinance", metavar="PROVIDER",
+                        choices=["yfinance", "alpaca"], dest="data_provider",
+                        help="Price data source: yfinance (default) or alpaca")
     parser.set_defaults(func=_run_pca)
 
 
@@ -490,24 +662,37 @@ def _run_basket(args):
         plot_equity_curve, plot_trade_pnl, plot_backtest_metrics,
     )
 
-    etf    = args.etf.upper()
-    stocks = [s.strip().upper() for s in args.stocks]
-    period = args.period
-    window = args.window
+    etf      = args.etf.upper()
+    stocks   = [s.strip().upper() for s in args.stocks]
+    period   = args.period
+    window   = args.window
+    provider = getattr(args, "data_provider", "yfinance")
 
-    print(f"Fetching {etf} + {len(stocks)} constituent(s) ({period})...")
-    try:
-        etf_prices = fetch_price(etf, period=period)
-    except Exception as e:
-        print(f"ERROR fetching {etf}: {e}")
-        sys.exit(1)
-
-    prices_dict = {}
-    for s in stocks:
+    print(f"Fetching {etf} + {len(stocks)} constituent(s) ({period}) via {provider}...")
+    if provider == "alpaca":
+        from src.data.fetcher import fetch_prices_bulk
+        all_tickers = [etf] + stocks
+        bulk = fetch_prices_bulk(all_tickers, period=period, provider="alpaca")
+        if etf not in bulk:
+            print(f"ERROR fetching {etf} from Alpaca.")
+            sys.exit(1)
+        etf_prices  = bulk[etf]
+        prices_dict = {s: bulk[s] for s in stocks if s in bulk}
+        missing = [s for s in stocks if s not in bulk]
+        if missing:
+            print(f"  WARNING: Could not fetch {missing}, skipping.")
+    else:
         try:
-            prices_dict[s] = fetch_price(s, period=period)
-        except Exception:
-            print(f"  WARNING: Could not fetch {s}, skipping.")
+            etf_prices = fetch_price(etf, period=period)
+        except Exception as e:
+            print(f"ERROR fetching {etf}: {e}")
+            sys.exit(1)
+        prices_dict = {}
+        for s in stocks:
+            try:
+                prices_dict[s] = fetch_price(s, period=period)
+            except Exception:
+                print(f"  WARNING: Could not fetch {s}, skipping.")
 
     if len(prices_dict) < 2:
         print("ERROR: Need at least 2 constituent tickers with data.")
@@ -518,28 +703,13 @@ def _run_basket(args):
     constituent_prices = constituent_prices.reindex(etf_aligned.index)
     print(f"  {len(etf_aligned)} aligned bars, {constituent_prices.shape[1]} constituents.")
 
-    # ── Train/test split ──────────────────────────────────────────────────────
-    split_date  = None
-    test_period = args.test_period
-    if test_period:
-        n_test = _PERIOD_BARS.get(test_period, 252)
-        if n_test >= len(etf_aligned) - window - 10:
-            print(f"WARNING: --test-period '{test_period}' leaves too little data. Ignoring.")
-            test_period = None
-        else:
-            split_idx  = len(etf_aligned) - n_test
-            split_date = etf_aligned.index[split_idx]
-            print(f"Train/test split — training up to {split_date.date()}  |  test: {test_period}")
+    walk_forward = getattr(args, "walk_forward", None)
 
     print(f"Computing rolling basket spread (window={window})...")
     spread = rolling_basket_spread(etf_aligned, constituent_prices, window=window)
 
-    spread_for_calib = spread.iloc[:len(spread) - _PERIOD_BARS.get(test_period, 0)] \
-        if test_period else spread
-    spread_clean = spread_for_calib.dropna()
-
-    adf = adf_test(spread_clean)
-    hl  = compute_half_life(spread_clean)
+    adf = adf_test(spread.dropna())
+    hl  = compute_half_life(spread.dropna())
     hl_str = f"{hl:.1f} days" if hl != float("inf") else "inf"
     print(
         f"Spread ADF p-val: {adf['p_value']:.4f}  "
@@ -556,8 +726,75 @@ def _run_basket(args):
     params = {
         "period": period, "window": window,
         "z_entry": args.z_entry, "z_exit": args.z_exit, "z_stop": args.z_stop,
-        "test_period": test_period,
     }
+
+    # ── Walk-forward mode ─────────────────────────────────────────────────────
+    if walk_forward:
+        from src.backtest.metrics import compute_metrics
+        from src.strategies.basket.viz import plot_walk_forward_results
+        fold_bars = 252
+        T = len(signals)
+        fold_results  = []
+        all_trades    = []
+        equity_pieces = []
+        running_capital = 20_000.0
+
+        for i in range(walk_forward):
+            start_idx = T - (walk_forward - i) * fold_bars
+            end_idx   = min(T - (walk_forward - i - 1) * fold_bars, T) - 1
+            if start_idx < window + 10:
+                continue
+            fs = signals.index[start_idx]
+            fe = signals.index[end_idx]
+            t, eq, m = run_basket_backtest(
+                signals.loc[fs:fe], spread.loc[fs:fe],
+                capital=running_capital, cost_bps=args.cost_bps,
+            )
+            fold_results.append({
+                "fold": i + 1, "start": fs, "end": fe,
+                **{k: m[k] for k in ("n_trades", "total_return", "sharpe", "sortino",
+                                     "max_drawdown", "win_rate")},
+            })
+            all_trades.append(t)
+            equity_pieces.append(eq)
+            running_capital = float(eq["equity"].iloc[-1])
+            print(f"  Fold {i+1} ({fs.date()} to {fe.date()}): "
+                  f"{m['n_trades']} trades  |  "
+                  f"{m['total_return']:.1%} return  |  "
+                  f"Sharpe {m['sharpe']:.2f}")
+
+        if not fold_results:
+            print("Not enough data for walk-forward folds.")
+            return
+
+        stitched = pd.concat(equity_pieces)
+        overall  = compute_metrics(stitched, pd.concat(all_trades) if any(not t.empty for t in all_trades) else pd.DataFrame(), 20_000.0)
+        n_total     = sum(r["n_trades"] for r in fold_results)
+        mean_ret    = sum(r["total_return"] for r in fold_results) / len(fold_results)
+        mean_sharpe = sum(r["sharpe"] for r in fold_results) / len(fold_results)
+        print(f"\nWalk-Forward ({len(fold_results)} folds): "
+              f"{n_total} total trades  |  "
+              f"{mean_ret:.1%} avg fold return  |  "
+              f"Sharpe {mean_sharpe:.2f} avg")
+
+        _show(
+            plot_walk_forward_results(stitched, fold_results, overall, {**params, "cost_bps": args.cost_bps}),
+            f"Basket — {etf} — Walk-Forward Summary",
+        )
+        return
+
+    # ── Train/test split (single backtest) ────────────────────────────────────
+    split_date  = None
+    test_period = args.test_period
+    if test_period:
+        n_test = _PERIOD_BARS.get(test_period, 252)
+        if n_test >= len(etf_aligned) - window - 10:
+            print(f"WARNING: --test-period '{test_period}' leaves too little data. Ignoring.")
+            test_period = None
+        else:
+            split_idx  = len(etf_aligned) - n_test
+            split_date = etf_aligned.index[split_idx]
+            print(f"Train/test split — training up to {split_date.date()}  |  test: {test_period}")
 
     if split_date is not None:
         signals_bt = signals.loc[signals.index >= split_date]
@@ -625,6 +862,166 @@ def _run_basket_multi(args):
         "z_entry": args.z_entry, "z_exit": args.z_exit, "z_stop": args.z_stop,
         "cost_bps": args.cost_bps, "test_period": test_period,
     }
+
+    edgar_constituents = getattr(args, "edgar_constituents", False)
+
+    # ---- EDGAR walk-forward: point-in-time constituent history ----
+    if edgar_constituents and n_folds:
+        from src.data.fetcher import fetch_prices_bulk
+        from src.data.edgar import build_constituent_history, get_constituents_at
+
+        print("\nUsing EDGAR N-PORT historical constituents (survivorship-bias corrected).")
+
+        period_years = {"1y": 1, "2y": 2, "3y": 3, "5y": 5, "10y": 10}.get(period, 5)
+        end_date   = pd.Timestamp.today().normalize()
+        start_date = end_date - pd.DateOffset(years=period_years)
+
+        edgar_history = {}
+        all_hist_tickers = set()
+        etf_tickers = [etf for etf, _ in baskets]
+        for etf, _ in baskets:
+            print(f"  Fetching EDGAR history for {etf}...")
+            try:
+                hist = build_constituent_history(
+                    etf,
+                    start_date=start_date.strftime("%Y-%m-%d"),
+                    end_date=end_date.strftime("%Y-%m-%d"),
+                )
+                edgar_history[etf] = hist
+                for _, row in hist.iterrows():
+                    all_hist_tickers.update(row["constituents"])
+            except Exception as e:
+                print(f"  WARNING: EDGAR fetch failed for {etf}: {e}. Using fixed constituents.")
+                edgar_history[etf] = None
+
+        # Fetch all historical prices upfront
+        all_tickers = list((all_hist_tickers | set(etf_tickers)) - {""})
+        print(f"  Fetching prices for {len(all_tickers)} tickers ({period})...")
+        all_prices_dict = fetch_prices_bulk(all_tickers, period=period)
+
+        fold_bars = 252
+        T_ref = min(
+            len(pd.Series(dtype=float, index=pd.bdate_range(start_date, end_date))),
+            n_folds * fold_bars + 300,
+        )
+        # Use the longest available price series as T reference
+        T = max(len(v) for v in all_prices_dict.values()) if all_prices_dict else 0
+
+        fold_combined_metrics = []
+        all_stitched_pnls     = []
+
+        for fold_k in range(n_folds):
+            start_idx = T - (n_folds - fold_k) * fold_bars
+            end_idx   = min(T - (n_folds - fold_k - 1) * fold_bars, T)
+            if start_idx < window + 10:
+                continue
+
+            # Find fold dates from any ETF price series
+            ref_series = next(iter(all_prices_dict.values()))
+            ref_index  = ref_series.index if hasattr(ref_series, "index") else pd.Series(ref_series).index
+            if start_idx >= len(ref_index) or end_idx - 1 >= len(ref_index):
+                continue
+            fold_start_date = ref_index[start_idx]
+            fold_end_date   = ref_index[end_idx - 1]
+
+            fold_leg_pnls = []
+
+            for etf, _ in baskets:
+                # Point-in-time constituents
+                hist = edgar_history.get(etf)
+                if hist is not None and not hist.empty:
+                    pit_tickers = get_constituents_at(hist, fold_start_date)
+                else:
+                    # Fall back to fixed stocks from CLI if EDGAR unavailable
+                    pit_tickers = next(s for e, s in baskets if e == etf)
+
+                available = [t for t in pit_tickers if t in all_prices_dict and t != etf]
+                if len(available) < 2:
+                    continue
+                available = available[:20]  # cap to avoid rank-deficiency
+
+                etf_s = all_prices_dict.get(etf)
+                if etf_s is None:
+                    continue
+                if hasattr(etf_s, "loc"):
+                    etf_fold = etf_s.loc[fold_start_date:fold_end_date]
+                else:
+                    etf_fold = pd.Series(etf_s).loc[fold_start_date:fold_end_date]
+
+                const_df = pd.DataFrame(
+                    {t: all_prices_dict[t] for t in available}
+                ).loc[fold_start_date:fold_end_date].dropna()
+                etf_fold = etf_fold.reindex(const_df.index).dropna()
+                const_df = const_df.reindex(etf_fold.index)
+
+                if len(etf_fold) < window + 10:
+                    continue
+
+                spread_fold = rolling_basket_spread(
+                    etf_fold, const_df, window=window,
+                    ridge_alpha=args.ridge_alpha,
+                    regime_filter=args.regime_filter,
+                )
+                signals_fold, _ = generate_basket_signals(
+                    spread_fold, window=window,
+                    z_entry=args.z_entry, z_exit=args.z_exit, z_stop=args.z_stop,
+                )
+                _, equity_fold, _ = run_basket_backtest(
+                    signals_fold, spread_fold, capital=leg_capital,
+                    cost_bps=args.cost_bps, n_stocks=len(available),
+                )
+                daily_pnl = equity_fold["equity"].diff().fillna(0)
+                fold_leg_pnls.append(daily_pnl.rename(etf))
+
+            if not fold_leg_pnls:
+                print(f"  Fold {fold_k + 1}: no legs ran, skipping.")
+                continue
+
+            fold_pnl_df   = pd.concat(fold_leg_pnls, axis=1, sort=True).fillna(0)
+            fold_comb_pnl = fold_pnl_df.sum(axis=1)
+            fold_equity   = (total_capital + fold_comb_pnl.cumsum()).to_frame("equity")
+
+            fm = _compute_metrics(fold_equity, total_capital)
+            fm["start"] = fold_comb_pnl.index[0]
+            fm["end"]   = fold_comb_pnl.index[-1]
+            fm["fold"]  = fold_k + 1
+            fm["n_trades"] = 0
+            fm["win_rate"] = float("nan")
+
+            fold_combined_metrics.append(fm)
+            all_stitched_pnls.append(fold_comb_pnl)
+            print(f"  Fold {fold_k + 1} ({fm['start'].date()} to {fm['end'].date()}): "
+                  f"{fm['total_return']:.1%}  Sharpe {fm['sharpe']:.2f}")
+
+        if not all_stitched_pnls:
+            print("ERROR: No fold data. Ensure period is long enough and EDGAR history is available.")
+            sys.exit(1)
+
+        full_pnl        = pd.concat(all_stitched_pnls).sort_index()
+        stitched_equity = (total_capital + full_pnl.cumsum()).to_frame("equity")
+        overall         = _compute_metrics(stitched_equity, total_capital)
+        overall["start"] = stitched_equity.index[0]
+        overall["end"]   = stitched_equity.index[-1]
+
+        print(
+            f"\nEDGAR Walk-Forward ({n_folds} folds): "
+            f"{overall['total_return']:.1%} return  |  "
+            f"Sharpe {overall['sharpe']:.2f}  |  "
+            f"Max DD {overall['max_drawdown']:.1%}"
+        )
+
+        print("Opening windows...")
+        _show(
+            plot_walk_forward_results(stitched_equity, fold_combined_metrics, overall, params),
+            f"Basket (EDGAR) -- Walk-Forward",
+        )
+        return
+
+    if edgar_constituents and not n_folds:
+        print(
+            "\nNOTE: --edgar-constituents has no effect without --walk-forward. "
+            "Using today's fixed composition."
+        )
 
     print(
         "\nNOTE: constituents are fixed at today's composition. "
@@ -902,6 +1299,9 @@ def _register_basket_multi(subparsers):
                         dest="regime_filter",
                         help="Suppress spread when normalised OLS coefficient shift exceeds T "
                              "(default: 0 = off). Detects structural breaks. Try 0.20–0.50.")
+    parser.add_argument("--edgar-constituents", action="store_true", dest="edgar_constituents",
+                        help="Use EDGAR N-PORT historical constituents for point-in-time survivorship "
+                             "bias correction (requires --walk-forward).")
     parser.set_defaults(func=_run_basket_multi)
 
 
@@ -923,6 +1323,13 @@ def _register_basket(subparsers):
     parser.add_argument("--test-period", default=None, metavar="PERIOD",
                         choices=["3mo", "6mo", "1y", "2y"],
                         help="Hold out the most recent PERIOD as out-of-sample test window.")
+    parser.add_argument("--data-provider", default="yfinance", metavar="PROVIDER",
+                        choices=["yfinance", "alpaca"], dest="data_provider",
+                        help="Price data source: yfinance (default) or alpaca.")
+    parser.add_argument("--cost-bps", default=2.0, type=float, metavar="BPS",
+                        help="Round-trip transaction cost in basis points (default: 2.0).")
+    parser.add_argument("--walk-forward", default=None, type=int, metavar="N", dest="walk_forward",
+                        help="Run N non-overlapping 1-year OOS folds.")
     parser.set_defaults(func=_run_basket)
 
 
@@ -1039,11 +1446,15 @@ def _register_basket_history(subparsers):
 # cta: multi-horizon EWMAC trend-following across a diversified ETF universe
 # ---------------------------------------------------------------------------
 def _run_cta(args):
+    import math as _math
     from src.data.fetcher import fetch_prices_bulk
     from src.analytics.cta import vol_targeted_weights
     from src.strategies.cta.signals import CTA_UNIVERSE, generate_cta_positions
-    from src.strategies.cta.viz import plot_cta_equity, plot_cta_signals, plot_cta_contributions
-    from src.backtest.portfolio_engine import run_portfolio_backtest
+    from src.strategies.cta.viz import (
+        plot_cta_equity, plot_cta_signals, plot_cta_contributions,
+        plot_cta_sweep_heatmap, plot_cta_walk_forward,
+    )
+    from src.backtest.portfolio_engine import run_portfolio_backtest, _compute_metrics
 
     universe_name = args.universe.lower()
     if universe_name not in CTA_UNIVERSE:
@@ -1053,15 +1464,15 @@ def _run_cta(args):
     tickers = CTA_UNIVERSE[universe_name]
     period  = args.period
 
-    print(f"Fetching {len(tickers)} tickers ({period})...")
-    prices_dict = fetch_prices_bulk(tickers, period=period)
+    provider = getattr(args, "data_provider", "yfinance")
+    print(f"Fetching {len(tickers)} tickers ({period}, provider={provider})...")
+    prices_dict = fetch_prices_bulk(tickers, period=period, provider=provider)
     if len(prices_dict) < 2:
         print("ERROR: Need at least 2 tickers with data.")
         sys.exit(1)
 
     prices_df = pd.DataFrame(prices_dict)
 
-    # Drop tickers with < 80% coverage before aligning
     min_obs = int(0.80 * len(prices_df))
     prices_df = prices_df.dropna(thresh=min_obs, axis=1)
     prices_df = prices_df.dropna()
@@ -1072,36 +1483,167 @@ def _run_cta(args):
         print(f"  Dropped {dropped} ticker(s) with insufficient history.")
     print(f"Aligned {n_instruments} instruments over {len(prices_df)} bars.")
 
-    # ── Train/test split ──────────────────────────────────────────────────────
+    signal_mode   = getattr(args, "signal_mode", "binary")
+    corr_adjust   = getattr(args, "corr_adjust", False)
+    n_folds       = getattr(args, "walk_forward", None)
+    do_sweep      = getattr(args, "sweep", False)
+    use_regime    = getattr(args, "regime_filter", False)
+
+    spy_prices = None
+    if use_regime:
+        from src.data.fetcher import fetch_price as _fetch_price
+        try:
+            spy_prices = _fetch_price("SPY", period=period)
+            spy_prices = spy_prices.reindex(prices_df.index).ffill()
+            print("Regime filter: SPY 200-day MA (equity longs suppressed in risk-off)...")
+        except Exception:
+            print("WARNING: Could not fetch SPY for regime filter — filter disabled.")
+
+    # ── Sweep mode: grid search over parameters ───────────────────────────────
+    if do_sweep:
+        from src.strategies.cta.sweep import sweep_cta_params
+        fold_bars = 252
+        n_sweep_folds = 5
+        T = len(prices_df)
+        fold_starts, fold_ends = [], []
+        for k in range(n_sweep_folds):
+            start_idx = T - (n_sweep_folds - k) * fold_bars
+            end_idx   = min(T - (n_sweep_folds - k - 1) * fold_bars, T) - 1
+            if start_idx < 300:
+                continue
+            fold_starts.append(prices_df.index[start_idx])
+            fold_ends.append(prices_df.index[end_idx])
+
+        if not fold_starts:
+            print("ERROR: Not enough data for sweep folds. Use --period 10y or longer.")
+            sys.exit(1)
+
+        print(f"Running parameter sweep ({len(fold_starts)} folds)...")
+        sweep_results = sweep_cta_params(
+            prices_df, fold_starts, fold_ends,
+            tau=args.vol_target, cost_bps=args.cost_bps, capital=args.capital,
+        )
+
+        if sweep_results.empty:
+            print("ERROR: Sweep returned no results.")
+            sys.exit(1)
+
+        print("\nSweep results (Sharpe mean across folds):")
+        for mode in sweep_results.index.get_level_values("signal_mode").unique():
+            mode_df = sweep_results.xs(mode, level="signal_mode")["sharpe_mean"].unstack("vol_span")
+            print(f"\n  [{mode}]")
+            print(mode_df.to_string(float_format=lambda x: f"{x:+.2f}"))
+
+        print("\nOpening sweep heatmap...")
+        _show(plot_cta_sweep_heatmap(sweep_results), "CTA -- Parameter Sweep")
+        return
+
+    pairs = ((8, 32), (16, 64), (32, 128), (64, 256))
+    weight_cap = args.weight_cap if args.weight_cap > 0 else None
+
+    regime_label = ", regime_filter=SPY_200MA" if use_regime and spy_prices is not None else ""
+    print(f"Computing EWMAC signals (mode={signal_mode}, threshold={args.threshold}{regime_label})...")
+    positions_df, signals_df = generate_cta_positions(
+        prices_df, pairs=pairs, threshold=args.threshold, signal_mode=signal_mode,
+        spy_prices=spy_prices,
+    )
+
+    corr_label = ", corr_adjust=True" if corr_adjust else ""
+    print(f"Applying vol targeting (tau={args.vol_target:.0%}, vol_span={args.vol_span}, cap={weight_cap or 'none'}{corr_label})...")
+    weights_df = vol_targeted_weights(
+        positions_df, prices_df,
+        tau=args.vol_target,
+        vol_span=args.vol_span,
+        weight_cap=weight_cap,
+        corr_adjust=corr_adjust,
+    )
+
+    # ── Walk-forward mode ────────────────────────────────────────────────────
+    if n_folds:
+        print(f"\nRunning walk-forward validation ({n_folds} folds × 1y)...")
+        fold_bars = 252
+        T = len(prices_df)
+
+        fold_combined_metrics = []
+        all_stitched_pnls     = []
+
+        for fold_k in range(n_folds):
+            start_idx = T - (n_folds - fold_k) * fold_bars
+            end_idx   = min(T - (n_folds - fold_k - 1) * fold_bars, T)
+
+            if start_idx < 300:
+                print(f"  Fold {fold_k + 1}: insufficient warm-up data, skipping.")
+                continue
+
+            fold_start = prices_df.index[start_idx]
+            fold_end   = prices_df.index[end_idx - 1]
+
+            mask         = (prices_df.index >= fold_start) & (prices_df.index <= fold_end)
+            prices_fold  = prices_df.loc[mask]
+            pos_fold     = positions_df.loc[mask]
+            weights_fold = weights_df.loc[mask]
+
+            equity_fold, fm = run_portfolio_backtest(
+                pos_fold, prices_fold, capital=args.capital,
+                cost_bps=args.cost_bps, weights_df=weights_fold,
+            )
+
+            fm["start"] = fold_start
+            fm["end"]   = fold_end
+            fm["fold"]  = fold_k + 1
+
+            fold_combined_metrics.append(fm)
+            daily_pnl = equity_fold["equity"].diff().fillna(0)
+            all_stitched_pnls.append(daily_pnl)
+
+            print(f"  Fold {fold_k + 1} ({fold_start.date()} to {fold_end.date()}): "
+                  f"{fm['total_return']:.1%} return  |  Sharpe {fm['sharpe']:.2f}")
+
+        if not all_stitched_pnls:
+            print("ERROR: No fold data. Use a longer --period.")
+            sys.exit(1)
+
+        full_pnl        = pd.concat(all_stitched_pnls).sort_index()
+        stitched_equity = (args.capital + full_pnl.cumsum()).to_frame("equity")
+        overall         = _compute_metrics(stitched_equity, args.capital)
+        overall["start"] = stitched_equity.index[0]
+        overall["end"]   = stitched_equity.index[-1]
+
+        print(
+            f"\nWalk-Forward ({n_folds} folds): "
+            f"{overall['total_return']:.1%} return  |  "
+            f"Sharpe {overall['sharpe']:.2f}  |  "
+            f"Max DD {overall['max_drawdown']:.1%}"
+        )
+
+        wf_params = {
+            "period":       period,
+            "universe":     universe_name.capitalize(),
+            "signal_mode":  signal_mode,
+            "vol_target":   f"{args.vol_target:.0%}",
+            "threshold":    args.threshold,
+            "cost_bps":     args.cost_bps,
+        }
+        print("Opening windows...")
+        _show(
+            plot_cta_walk_forward(stitched_equity, fold_combined_metrics, overall, wf_params),
+            f"CTA -- {universe_name.capitalize()} -- Walk-Forward",
+        )
+        return
+
+    # ── Single train/test split (existing behaviour) ─────────────────────────
     split_date  = None
     test_period = args.test_period
     if test_period:
         n_test = _PERIOD_BARS.get(test_period, 252)
-        # Need enough warm-up for the slowest EMA (256 bars) before split
         if n_test >= len(prices_df) - 300:
             print(f"WARNING: --test-period '{test_period}' leaves too little data. Ignoring.")
             test_period = None
         else:
             split_idx  = len(prices_df) - n_test
             split_date = prices_df.index[split_idx]
-            print(f"Train/test split — training up to {split_date.date()}  |  test: {test_period} forward")
+            print(f"Train/test split — up to {split_date.date()}  |  test: {test_period} forward")
 
-    pairs = ((8, 32), (16, 64), (32, 128), (64, 256))
-
-    # Signals use only past prices at every bar — no fitting step, no leakage
-    print("Computing EWMAC signals...")
-    positions_df, signals_df = generate_cta_positions(prices_df, pairs=pairs, threshold=args.threshold)
-
-    # Vol-targeted weights computed on full history for proper EWM warm-up, then sliced
-    weight_cap = args.weight_cap if args.weight_cap > 0 else None
-    print(f"Applying vol targeting (tau={args.vol_target:.0%}, cap={weight_cap or 'none'})...")
-    weights_df = vol_targeted_weights(
-        positions_df, prices_df,
-        tau=args.vol_target,
-        weight_cap=weight_cap,
-    )
-
-    # Restrict backtest to test window if set
     if split_date is not None:
         prices_bt    = prices_df.loc[prices_df.index >= split_date]
         positions_bt = positions_df.loc[positions_df.index >= split_date]
@@ -1115,10 +1657,29 @@ def _run_cta(args):
     avg_gross = weights_bt.abs().sum(axis=1).mean()
     print(f"Average gross leverage: {avg_gross:.2f}x")
 
+    cost_model = getattr(args, "cost_model", "fixed")
+    cost_df_bt = None
+    if cost_model == "volume-adjusted":
+        from src.data.fetcher import fetch_ohlcv_bulk
+        from src.analytics.costs import estimate_cost_bps
+        print("Fetching OHLCV for volume-adjusted cost model...")
+        ohlcv = fetch_ohlcv_bulk(list(prices_bt.columns), period=period, provider=provider)
+        cost_series = {
+            t: estimate_cost_bps(
+                ohlcv[t]["close"], ohlcv[t]["volume"],
+                order_notional=args.capital / max(1, n_instruments),
+            )
+            for t in prices_bt.columns if t in ohlcv
+        }
+        if cost_series:
+            cost_df_bt = pd.DataFrame(cost_series).reindex(prices_bt.index)
+            avg_cost = cost_df_bt.mean().mean()
+            print(f"  Volume-adjusted cost: avg {avg_cost:.1f}bps (vs flat {args.cost_bps}bps)")
+
     print(f"Running portfolio backtest ({n_instruments} instruments, cost={args.cost_bps}bps)...")
     equity_curve, bt_metrics = run_portfolio_backtest(
         positions_bt, prices_bt, capital=args.capital, cost_bps=args.cost_bps,
-        weights_df=weights_bt,
+        weights_df=weights_bt, cost_df=cost_df_bt,
     )
 
     period_label = f"({test_period} test)" if test_period else f"({period} full)"
@@ -1130,12 +1691,12 @@ def _run_cta(args):
     )
 
     params = {
-        "period": period,
+        "period":        period,
         "n_instruments": n_instruments,
-        "vol_target": f"{args.vol_target:.0%}",
-        "threshold": args.threshold,
-        "cost_bps": args.cost_bps,
-        "test_period": test_period,
+        "vol_target":    f"{args.vol_target:.0%}",
+        "threshold":     args.threshold,
+        "cost_bps":      args.cost_bps,
+        "test_period":   test_period,
     }
     universe_label = universe_name.capitalize()
 
@@ -1161,21 +1722,459 @@ def _register_cta(subparsers):
     parser.add_argument("--test-period", default="1y", metavar="PERIOD",
                         choices=["3mo", "6mo", "1y", "2y"],
                         help="Hold out the most recent PERIOD as out-of-sample test window (default: 1y)")
+    parser.add_argument("--walk-forward", default=None, type=int, metavar="N",
+                        dest="walk_forward",
+                        help="Run N non-overlapping 1-year OOS folds (overrides --test-period)")
+    parser.add_argument("--sweep", action="store_true",
+                        help="Run parameter grid search (threshold × vol_span × signal_mode) and show heatmap")
+    parser.add_argument("--signal-mode", default="binary", metavar="MODE",
+                        choices=["binary", "continuous"], dest="signal_mode",
+                        help="Position sizing mode: binary={-1,0,+1} or continuous=scaled ±1 (default: binary)")
+    parser.add_argument("--corr-adjust", action="store_true", dest="corr_adjust",
+                        help="Scale vol-targeted weights by correlation-adjusted portfolio vol to hit tau")
+    parser.add_argument("--regime-filter", action="store_true", dest="regime_filter",
+                        help="Suppress long equity positions when SPY is below its 200-day MA (risk-off filter)")
     parser.add_argument("--threshold", default=0.0, type=float, metavar="T",
                         help="Signal flat-band: |EWMAC| must exceed T to enter a position (default: 0)")
     parser.add_argument("--vol-target", default=0.20, type=float, metavar="TAU",
                         dest="vol_target",
-                        help="Annualised portfolio vol target for position sizing (default: 0.20 = 20%%). "
-                             "Each instrument's weight = direction × tau / (sigma_i × N_active).")
+                        help="Annualised portfolio vol target for position sizing (default: 0.20 = 20%%)")
+    parser.add_argument("--vol-span", default=25, type=int, metavar="N",
+                        dest="vol_span",
+                        help="EWM span (days) for per-instrument vol estimation in position sizing (default: 25)")
     parser.add_argument("--weight-cap", default=0.0, type=float, metavar="W",
                         dest="weight_cap",
-                        help="Per-instrument weight cap as fraction of capital (default: 0 = no cap). "
-                             "E.g. 0.40 limits any single instrument to ±40%% of capital.")
+                        help="Per-instrument weight cap as fraction of capital (default: 0 = no cap)")
     parser.add_argument("--cost-bps",  default=5.0, type=float, metavar="BPS",
                         help="Transaction cost per unit of portfolio turnover in bps (default: 5)")
     parser.add_argument("--capital",   default=20_000.0, type=float, metavar="DOLLARS",
                         help="Starting capital (default: 20000)")
+    parser.add_argument("--data-provider", default="yfinance", metavar="PROVIDER",
+                        choices=["yfinance", "alpaca"], dest="data_provider",
+                        help="Price data source: yfinance (default) or alpaca "
+                             "(requires ALPACA_API_KEY / ALPACA_SECRET_KEY env vars)")
+    parser.add_argument("--cost-model", default="fixed", metavar="MODEL",
+                        choices=["fixed", "volume-adjusted"], dest="cost_model",
+                        help="Transaction cost model: fixed (flat cost_bps, default) or "
+                             "volume-adjusted (Kyle's lambda estimate using ADV)")
     parser.set_defaults(func=_run_cta)
+
+
+# ---------------------------------------------------------------------------
+# portfolio: equal-risk-weighted combination of all four strategies
+# ---------------------------------------------------------------------------
+
+_PORTFOLIO_BASKETS = [
+    ("XLF", ["GS", "MS", "JPM", "BAC", "C"]),
+    ("XLE", ["XOM", "CVX", "COP"]),
+    ("XLK", ["MSFT", "AAPL", "NVDA"]),
+    ("XLV", ["JNJ", "UNH", "ABT"]),
+]
+
+
+def _run_portfolio(args):
+    import numpy as np
+    from src.data.fetcher import fetch_prices_bulk, fetch_price
+    from src.analytics.cta import vol_targeted_weights
+    from src.strategies.cta.signals import CTA_UNIVERSE, generate_cta_positions
+    from src.analytics.pca import rolling_pca_residuals
+    from src.strategies.pca.signals import generate_pca_signals
+    from src.analytics.basket import rolling_basket_spread
+    from src.strategies.basket.signals import generate_basket_signals
+    from src.strategies.basket.backtest import run_basket_backtest
+    from src.backtest.portfolio_engine import run_portfolio_backtest, _compute_metrics
+    from src.viz.portfolio import plot_portfolio_combined
+
+    period     = args.period
+    cost_bps   = args.cost_bps
+    capital    = args.capital
+    exclude    = set(getattr(args, "exclude", None) or [])
+    leg_cap    = capital / max(1, 4 - len(exclude))
+
+    per_strategy_equity  = {}
+    per_strategy_metrics = {}
+
+    # ── CTA ──────────────────────────────────────────────────────────────────
+    if "cta" not in exclude:
+        print("Running CTA strategy...")
+        try:
+            tickers = CTA_UNIVERSE["default"]
+            pd_dict = fetch_prices_bulk(tickers, period=period)
+            px = pd.DataFrame(pd_dict)
+            px = px.dropna(thresh=int(0.80 * len(px)), axis=1).dropna()
+            pos, _ = generate_cta_positions(px, threshold=0.0, signal_mode="binary")
+            wt  = vol_targeted_weights(pos, px, tau=0.20)
+            eq, m = run_portfolio_backtest(pos, px, capital=leg_cap, cost_bps=cost_bps, weights_df=wt)
+            per_strategy_equity["CTA"]  = eq
+            per_strategy_metrics["CTA"] = m
+            print(f"  CTA: {m['total_return']:.1%} return  Sharpe {m['sharpe']:.2f}")
+        except Exception as e:
+            print(f"  CTA failed: {e}")
+
+    # ── PCA ──────────────────────────────────────────────────────────────────
+    if "pca" not in exclude:
+        print("Running PCA strategy...")
+        try:
+            tickers = SCAN_UNIVERSES.get("financials", SCAN_UNIVERSES[next(iter(SCAN_UNIVERSES))])
+            pd_dict = fetch_prices_bulk(tickers, period=period)
+            px = pd.DataFrame(pd_dict).dropna()
+            ret = px.pct_change().dropna()
+            resid = rolling_pca_residuals(ret, window=60, n_components=3)
+            pos, _ = generate_pca_signals(resid, window=60, z_entry=2.0, z_exit=0.5, z_stop=3.5)
+            eq, m = run_portfolio_backtest(pos, px, capital=leg_cap, cost_bps=cost_bps)
+            per_strategy_equity["PCA"]  = eq
+            per_strategy_metrics["PCA"] = m
+            print(f"  PCA: {m['total_return']:.1%} return  Sharpe {m['sharpe']:.2f}")
+        except Exception as e:
+            print(f"  PCA failed: {e}")
+
+    # ── Basket ────────────────────────────────────────────────────────────────
+    if "basket" not in exclude:
+        print("Running Basket strategy...")
+        try:
+            basket_pnls = []
+            basket_leg_cap = leg_cap / len(_PORTFOLIO_BASKETS)
+            for etf, stocks in _PORTFOLIO_BASKETS:
+                etf_px = fetch_price(etf, period=period)
+                stocks_dict = {}
+                for s in stocks:
+                    try:
+                        stocks_dict[s] = fetch_price(s, period=period)
+                    except Exception:
+                        pass
+                if len(stocks_dict) < 2:
+                    continue
+                const_df   = pd.DataFrame(stocks_dict).dropna()
+                etf_aligned = etf_px.reindex(const_df.index).dropna()
+                const_df    = const_df.reindex(etf_aligned.index)
+                spread = rolling_basket_spread(etf_aligned, const_df, window=60)
+                sigs, _ = generate_basket_signals(spread, window=60, z_entry=1.5)
+                _, eq_leg, _ = run_basket_backtest(
+                    sigs, spread, capital=basket_leg_cap, cost_bps=cost_bps,
+                    n_stocks=const_df.shape[1],
+                )
+                pnl = eq_leg["equity"].diff().fillna(0)
+                basket_pnls.append(pnl.rename(etf))
+            if basket_pnls:
+                comb_pnl = pd.concat(basket_pnls, axis=1, sort=True).fillna(0).sum(axis=1)
+                eq = (leg_cap + comb_pnl.cumsum()).to_frame("equity")
+                m  = _compute_metrics(eq, leg_cap)
+                per_strategy_equity["Basket"]  = eq
+                per_strategy_metrics["Basket"] = m
+                print(f"  Basket: {m['total_return']:.1%} return  Sharpe {m['sharpe']:.2f}")
+        except Exception as e:
+            print(f"  Basket failed: {e}")
+
+    if not per_strategy_equity:
+        print("ERROR: No strategies ran successfully.")
+        sys.exit(1)
+
+    # ── Combine with equal-risk weighting ─────────────────────────────────────
+    print("Combining strategies with equal-risk weighting...")
+    pnl_df = pd.DataFrame(
+        {name: eq["equity"].diff().fillna(0) for name, eq in per_strategy_equity.items()}
+    ).sort_index().ffill().fillna(0)
+
+    # Rolling 63-day vol per strategy
+    rolling_vol = pnl_df.rolling(63, min_periods=21).std() * np.sqrt(252)
+    inv_vol  = 1.0 / rolling_vol.replace(0, np.nan)
+    raw_wt   = inv_vol.div(inv_vol.sum(axis=1), axis=0).fillna(0)
+
+    # Monthly rebalance
+    monthly_wt = raw_wt.resample("MS").first().reindex(pnl_df.index, method="ffill").fillna(0)
+    monthly_wt = monthly_wt.div(monthly_wt.sum(axis=1).replace(0, np.nan), axis=0).fillna(0)
+
+    combined_pnl    = (pnl_df * monthly_wt).sum(axis=1)
+    combined_equity = (capital + combined_pnl.cumsum()).to_frame("equity")
+    combined_metrics = _compute_metrics(combined_equity, capital)
+
+    print(
+        f"\nPortfolio ({', '.join(per_strategy_equity)}): "
+        f"{combined_metrics['total_return']:.1%} return  |  "
+        f"Sharpe {combined_metrics['sharpe']:.2f}  |  "
+        f"Max DD {combined_metrics['max_drawdown']:.1%}"
+    )
+
+    params = {"period": period, "cost_bps": cost_bps}
+    print("Opening window...")
+    _show(
+        plot_portfolio_combined(
+            combined_equity, per_strategy_equity, per_strategy_metrics,
+            combined_metrics, monthly_wt, params,
+        ),
+        "Multi-Strategy Portfolio",
+    )
+
+
+def _register_portfolio(subparsers):
+    parser = subparsers.add_parser(
+        "portfolio",
+        help="Equal-risk-weighted combination of all strategies (CTA + PCA + Basket)",
+    )
+    parser.add_argument("--period",   default="5y",  help="Data lookback (default: 5y)")
+    parser.add_argument("--cost-bps", default=5.0, type=float, metavar="BPS",
+                        help="Transaction cost in bps (default: 5)")
+    parser.add_argument("--capital",  default=100_000.0, type=float, metavar="DOLLARS",
+                        help="Starting capital split across strategies (default: 100000)")
+    parser.add_argument("--exclude",  nargs="*", default=None,
+                        choices=["cta", "pca", "basket"],
+                        help="Strategies to exclude (default: include all)")
+    parser.set_defaults(func=_run_portfolio)
+
+
+def _run_trade_basket(args, acct, capital, execute=False):
+    """Basket/ETF arbitrage live trading logic."""
+    import os as _os
+    from src.data.fetcher import fetch_prices_bulk
+    from src.analytics.basket import fit_basket, rolling_basket_spread
+    from src.strategies.pairs.signals import compute_zscore
+    from src.trading.alpaca_trader import place_notional_order
+    from alpaca.trading.enums import OrderSide
+
+    etf     = args.etf.upper()
+    stocks  = [s.strip().upper() for s in args.stocks]
+    window  = getattr(args, "window",  60)
+    z_entry = getattr(args, "z_entry", 1.5)
+    z_exit  = getattr(args, "z_exit",  0.25)
+    z_stop  = getattr(args, "z_stop",  2.5)
+
+    has_keys = bool(_os.environ.get("ALPACA_API_KEY") and _os.environ.get("ALPACA_SECRET_KEY"))
+    provider = "alpaca" if has_keys else "yfinance"
+    print(f"Fetching {etf} + {len(stocks)} stocks (1y, provider={provider})...")
+    prices = fetch_prices_bulk([etf] + stocks, period="1y", provider=provider)
+
+    if etf not in prices:
+        print(f"ERROR: Could not fetch {etf}.")
+        return
+    missing = [s for s in stocks if s not in prices]
+    if missing:
+        print(f"  WARNING: Could not fetch {missing}, skipping.")
+    stocks = [s for s in stocks if s in prices]
+    if len(stocks) < 2:
+        print("ERROR: Need at least 2 constituent tickers.")
+        return
+
+    constituent_df = pd.DataFrame({s: prices[s] for s in stocks}).dropna()
+    etf_aligned    = prices[etf].reindex(constituent_df.index).dropna()
+    constituent_df = constituent_df.reindex(etf_aligned.index)
+
+    spread = rolling_basket_spread(etf_aligned, constituent_df, window=window)
+    zscore = compute_zscore(spread, window=window)
+    current_z = float(zscore.dropna().iloc[-1])
+
+    # Current OLS weights fitted on the most recent window
+    coefs, _, _ = fit_basket(etf_aligned.iloc[-window:], constituent_df.iloc[-window:])
+    coef_sum     = sum(abs(c) for c in coefs)
+    etf_notional = capital / 2
+    stock_notionals = {
+        s: (abs(coefs[i]) / coef_sum) * (capital / 2)
+        for i, s in enumerate(stocks)
+    }
+
+    # Detect current position from Alpaca
+    try:
+        from src.trading.alpaca_trader import get_positions
+        current_positions = get_positions()
+    except Exception:
+        current_positions = {}
+    etf_pos         = current_positions.get(etf, 0.0)
+    in_short_spread = etf_pos < -100
+    in_long_spread  = etf_pos >  100
+    in_position     = in_short_spread or in_long_spread
+    state_str       = "short spread" if in_short_spread else "long spread" if in_long_spread else "flat"
+
+    print(f"\nBasket:    {etf} vs [{', '.join(stocks)}]")
+    print(f"Z-score:   {current_z:+.2f}  (entry ±{z_entry}  exit ±{z_exit}  stop ±{z_stop})")
+    print(f"Position:  {state_str}")
+
+    orders = []
+    if in_position:
+        exit_triggered = abs(current_z) < z_exit
+        stop_triggered = (in_short_spread and current_z < -z_stop) or \
+                         (in_long_spread  and current_z >  z_stop)
+        if exit_triggered or stop_triggered:
+            reason = "stop-loss" if stop_triggered else "z-exit"
+            print(f"Signal:    EXIT ({reason})")
+            etf_close   = OrderSide.BUY   if in_short_spread else OrderSide.SELL
+            stock_close = OrderSide.SELL  if in_short_spread else OrderSide.BUY
+            orders.append({"symbol": etf, "side": etf_close,   "notional": etf_notional, "note": "close ETF"})
+            for s, n in stock_notionals.items():
+                orders.append({"symbol": s, "side": stock_close, "notional": n, "note": "close stock"})
+        else:
+            print(f"Signal:    HOLD")
+    else:
+        if current_z > z_entry:
+            print(f"Signal:    SHORT SPREAD (ETF expensive)")
+            orders.append({"symbol": etf, "side": OrderSide.SELL, "notional": etf_notional, "note": "short ETF"})
+            for s, n in stock_notionals.items():
+                orders.append({"symbol": s, "side": OrderSide.BUY, "notional": n, "note": "long stock"})
+        elif current_z < -z_entry:
+            print(f"Signal:    LONG SPREAD (ETF cheap)")
+            orders.append({"symbol": etf, "side": OrderSide.BUY, "notional": etf_notional, "note": "long ETF"})
+            for s, n in stock_notionals.items():
+                orders.append({"symbol": s, "side": OrderSide.SELL, "notional": n, "note": "short stock"})
+        else:
+            print(f"Signal:    FLAT (waiting for |z| > {z_entry})")
+
+    print(f"\n  {'Symbol':<8} {'Side':<6} {'Notional':>10}  Note")
+    print(f"  {'-'*8} {'-'*6} {'-'*10}  {'-'*15}")
+    for o in orders:
+        print(f"  {o['symbol']:<8} {o['side'].value:<6} ${o['notional']:>9,.0f}  {o['note']}")
+    if not orders:
+        print("  (no orders)")
+
+    if execute and orders:
+        print(f"\nPlacing {len(orders)} order(s)...")
+        for o in orders:
+            try:
+                place_notional_order(o["symbol"], o["notional"], o["side"])
+                print(f"  {o['side'].value} {o['symbol']} ${o['notional']:,.0f} — submitted")
+            except Exception as e:
+                print(f"  ERROR on {o['symbol']}: {e}")
+        print("Done.")
+    elif orders:
+        print("\nDry run — pass --execute to place orders.")
+
+
+def _run_trade(args):
+    from src.data.fetcher import fetch_prices_bulk
+    from src.analytics.cta import vol_targeted_weights
+    from src.strategies.cta.signals import CTA_UNIVERSE, generate_cta_positions
+    from src.trading.alpaca_trader import (
+        get_account, get_positions, place_notional_order, close_all_positions,
+    )
+    from src.trading.rebalancer import weights_to_orders
+
+    if args.liquidate:
+        print("Closing all positions...")
+        close_all_positions()
+        print("All positions closed.")
+        return
+
+    # Account info (required for --execute; optional for dry-run)
+    acct = None
+    try:
+        acct = get_account()
+        print(f"Account: equity=${acct['equity']:,.0f}  buying_power=${acct['buying_power']:,.0f}")
+    except Exception as e:
+        if args.execute or args.liquidate:
+            print(f"ERROR: Could not connect to Alpaca: {e}")
+            return
+        print(f"(Alpaca account unavailable -- showing signal preview only)")
+
+    capital = args.capital if args.capital > 0 else (acct["equity"] if acct else 20_000.0)
+
+    if args.strategy == "basket":
+        _run_trade_basket(args, acct, capital, execute=args.execute)
+        return
+
+    # Fetch prices — use Alpaca if keys available, else yfinance
+    tickers = CTA_UNIVERSE["default"]
+    import os as _os
+    has_keys = bool(_os.environ.get("ALPACA_API_KEY") and _os.environ.get("ALPACA_SECRET_KEY"))
+    provider = "alpaca" if has_keys else "yfinance"
+    print(f"Fetching {len(tickers)} tickers (2y, provider={provider})...")
+    try:
+        prices_dict = fetch_prices_bulk(tickers, period="2y", provider=provider)
+    except PermissionError as e:
+        print(f"ERROR: {e}")
+        return
+
+    if len(prices_dict) < 2:
+        print("ERROR: Not enough price data returned.")
+        return
+
+    prices_df = pd.DataFrame(prices_dict)
+    prices_df = prices_df.dropna(thresh=int(0.80 * len(prices_df)), axis=1).dropna()
+    print(f"Aligned {prices_df.shape[1]} instruments over {len(prices_df)} bars.")
+
+    # Regime filter (optional)
+    spy_prices = None
+    if args.regime_filter and "SPY" in prices_df.columns:
+        spy_prices = prices_df["SPY"]
+        print("Regime filter: SPY 200-day MA active...")
+
+    # Compute signals + weights (identical to _run_cta)
+    signal_date = prices_df.index[-1].date()
+    print(f"Computing signals ({signal_date})...")
+    positions_df, _ = generate_cta_positions(
+        prices_df, threshold=0.0, signal_mode="binary", spy_prices=spy_prices,
+    )
+    weights_df = vol_targeted_weights(
+        positions_df, prices_df, tau=0.20, vol_span=args.vol_span,
+    )
+
+    target_weights  = weights_df.iloc[-1]
+    current_prices  = prices_df.iloc[-1]
+    try:
+        current_positions = get_positions()
+    except Exception:
+        current_positions = {}
+
+    orders = weights_to_orders(
+        target_weights, current_prices, capital, current_positions,
+        min_order_dollars=args.min_order,
+    )
+
+    # Print order table
+    print(f"\n  {'Symbol':<8} {'Target%':>8} {'Current%':>9} {'Order $':>10}  Side")
+    print(f"  {'-'*8} {'-'*8} {'-'*9} {'-'*10}  {'-'*4}")
+    for o in orders:
+        sign = "+" if o["order_notional"] > 0 else ""
+        print(f"  {o['symbol']:<8} {o['target_pct']:>+8.1%} {o['current_pct']:>+9.1%} "
+              f"  {sign}{o['order_notional']:>8,.0f}  {o['side'].value}")
+
+    if not orders:
+        print("  (no orders needed — already at target weights)")
+
+    if args.execute:
+        print(f"\nPlacing {len(orders)} order(s)...")
+        for o in orders:
+            try:
+                place_notional_order(o["symbol"], abs(o["order_notional"]), o["side"])
+                print(f"  {o['side'].value} {o['symbol']} ${abs(o['order_notional']):,.0f} — submitted")
+            except Exception as e:
+                print(f"  ERROR on {o['symbol']}: {e}")
+        print("Done.")
+    else:
+        print("\nDry run — pass --execute to place orders.")
+
+
+def _register_trade(subparsers):
+    parser = subparsers.add_parser(
+        "trade",
+        help="Generate CTA signals and place paper orders via Alpaca",
+    )
+    parser.add_argument("--strategy", default="cta", choices=["cta", "basket"],
+                        help="Strategy to trade (default: cta)")
+    parser.add_argument("--capital", default=0.0, type=float, metavar="DOLLARS",
+                        help="Portfolio capital in dollars (default: 0 = use account equity)")
+    parser.add_argument("--min-order", default=50.0, type=float, metavar="DOLLARS",
+                        dest="min_order",
+                        help="Minimum order size in dollars — skip smaller rebalances (default: 50)")
+    parser.add_argument("--vol-span", default=60, type=int, metavar="N",
+                        dest="vol_span",
+                        help="EWM span for vol estimation (default: 60)")
+    parser.add_argument("--regime-filter", action="store_true", dest="regime_filter",
+                        help="Suppress long equity positions when SPY is below its 200-day MA")
+    parser.add_argument("--execute", action="store_true",
+                        help="Place orders (default: dry-run preview only)")
+    parser.add_argument("--liquidate", action="store_true",
+                        help="Close all open positions and exit")
+    # Basket-specific args (only used when --strategy basket)
+    parser.add_argument("--etf", default=None, metavar="TICKER",
+                        help="ETF ticker for basket strategy, e.g. XLF")
+    parser.add_argument("--stocks", default=None, nargs="+", metavar="TICKER",
+                        help="Constituent tickers for basket strategy, e.g. GS MS JPM BAC C")
+    parser.add_argument("--window", default=60, type=int, metavar="N",
+                        help="OLS rolling window in days (default: 60)")
+    parser.add_argument("--z-entry", default=1.5, type=float, dest="z_entry",
+                        help="Z-score entry threshold (default: 1.5)")
+    parser.add_argument("--z-exit", default=0.25, type=float, dest="z_exit",
+                        help="Z-score exit threshold (default: 0.25)")
+    parser.add_argument("--z-stop", default=2.5, type=float, dest="z_stop",
+                        help="Z-score stop-loss threshold (default: 2.5)")
+    parser.set_defaults(func=_run_trade)
 
 
 def main():
@@ -1189,6 +2188,8 @@ def main():
     _register_basket_multi(subparsers)
     _register_basket_history(subparsers)
     _register_cta(subparsers)
+    _register_portfolio(subparsers)
+    _register_trade(subparsers)
 
     args = parser.parse_args()
     args.func(args)

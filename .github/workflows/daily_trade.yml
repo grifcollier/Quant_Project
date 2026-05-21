@@ -1,0 +1,34 @@
+name: Daily Basket Trade
+
+on:
+  schedule:
+    - cron: "30 20 * * 1-5"   # 4:30 PM EDT (UTC-4) Mon-Fri — adjust to 30 21 in winter (EST)
+  workflow_dispatch:            # allows manual trigger from GitHub Actions tab
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily basket trade (dry-run)
+        env:
+          ALPACA_API_KEY:     ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY:  ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_PAPER_KEY:   ${{ secrets.ALPACA_PAPER_KEY }}
+          ALPACA_PAPER_SECRET: ${{ secrets.ALPACA_PAPER_SECRET }}
+        run: python scripts/daily_trade.py
+        # Change to: python scripts/daily_trade.py --execute
+        # once you've confirmed signals look correct

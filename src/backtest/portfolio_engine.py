@@ -12,6 +12,7 @@ def run_portfolio_backtest(
     capital: float,
     cost_bps: float = 5.0,
     weights_df: pd.DataFrame = None,
+    cost_df: pd.DataFrame = None,
 ) -> tuple:
     """
     Compute a daily equity curve from a positions DataFrame.
@@ -24,9 +25,12 @@ def run_portfolio_backtest(
     positions_df : (T, N) DataFrame, values in {-1, 0, +1}, indexed by date.
     prices_df    : (T, N) DataFrame of closing prices, indexed by date.
     capital      : Total portfolio capital.
-    cost_bps     : Transaction cost per unit of turnover (basis points).
+    cost_bps     : Flat transaction cost per unit of turnover (basis points). Ignored when
+                   cost_df is provided.
     weights_df   : Optional (T, N) float weights. When provided, used directly instead
                    of the default equal-weight normalisation. Supports leverage (|w|>1 sum).
+    cost_df      : Optional (T, N) DataFrame of per-instrument per-bar cost in bps.
+                   When provided, replaces the flat cost_bps model.
 
     Returns
     -------
@@ -53,9 +57,14 @@ def run_portfolio_backtest(
 
     port_ret = (weights.shift(1).fillna(0.0) * daily_ret).sum(axis=1)
 
-    # Transaction cost proportional to absolute weight change (turnover)
-    turnover = weights.diff().fillna(0.0).abs().sum(axis=1)
-    cost     = turnover * cost_bps / 10_000
+    # Transaction cost: volume-adjusted per-instrument cost or flat rate
+    weight_change = weights.diff().fillna(0.0).abs()
+    if cost_df is not None:
+        cost_rates = cost_df.reindex(common).fillna(cost_bps)
+        cost = (weight_change * cost_rates / 10_000).sum(axis=1)
+    else:
+        turnover = weight_change.sum(axis=1)
+        cost     = turnover * cost_bps / 10_000
 
     net_ret = port_ret - cost
     equity_series = capital * (1.0 + net_ret).cumprod()
