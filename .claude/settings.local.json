@@ -65,7 +65,14 @@
       "Bash(python -c \"import reportlab; print\\('reportlab'\\)\")",
       "Bash(python -c \"import weasyprint; print\\('weasyprint'\\)\")",
       "Bash(pandoc --version)",
-      "Bash(python -c \"import markdown; print\\('markdown'\\)\")"
+      "Bash(python -c \"import markdown; print\\('markdown'\\)\")",
+      "Bash(python run.py cta --help)",
+      "Bash(pip install *)",
+      "Bash(python *)",
+      "Bash(Remove-Item data\\\\cache\\\\*_alpaca.csv -ErrorAction SilentlyContinue)",
+      "Bash(Write-Host \"Cache cleared\")",
+      "PowerShell($env:ALPACA_API_KEY -ne $null -and $env:ALPACA_API_KEY -ne \"\")",
+      "Bash(grep -v \"^$\")"
     ]
   }
 }
