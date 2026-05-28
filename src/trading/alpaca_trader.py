@@ -58,6 +58,29 @@ def place_notional_order(symbol: str, notional: float, side) -> object:
     return _get_client().submit_order(request)
 
 
+def place_qty_order(symbol: str, qty: int, side) -> object:
+    """
+    Place a market order for a whole-share quantity.
+
+    Required for short sells — Alpaca does not allow fractional short sales.
+    """
+    from alpaca.trading.requests import MarketOrderRequest
+    from alpaca.trading.enums import TimeInForce
+
+    request = MarketOrderRequest(
+        symbol=symbol,
+        qty=int(qty),
+        side=side,
+        time_in_force=TimeInForce.DAY,
+    )
+    return _get_client().submit_order(request)
+
+
+def close_position(symbol: str) -> object:
+    """Close the entire open position for a single symbol."""
+    return _get_client().close_position(symbol)
+
+
 def cancel_all_orders():
     """Cancel all open orders."""
     _get_client().cancel_orders()

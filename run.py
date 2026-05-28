@@ -1928,7 +1928,7 @@ def _run_trade_basket(args, acct, capital, execute=False):
     from src.data.fetcher import fetch_prices_bulk
     from src.analytics.basket import fit_basket, rolling_basket_spread
     from src.strategies.pairs.signals import compute_zscore
-    from src.trading.alpaca_trader import place_notional_order
+    from src.trading.alpaca_trader import place_notional_order, place_qty_order, close_position
     from alpaca.trading.enums import OrderSide
 
     etf     = args.etf.upper()
@@ -1975,18 +1975,41 @@ def _run_trade_basket(args, acct, capital, execute=False):
     try:
         from src.trading.alpaca_trader import get_positions
         current_positions = get_positions()
-    except Exception:
+    except Exception as e:
+        if execute:
+            print(f"ERROR: Could not fetch positions from Alpaca: {e}")
+            print("  Aborting — cannot determine if already invested.")
+            return
         current_positions = {}
-    etf_pos         = current_positions.get(etf, 0.0)
-    in_short_spread = etf_pos < -100
-    in_long_spread  = etf_pos >  100
-    in_position     = in_short_spread or in_long_spread
-    state_str       = "short spread" if in_short_spread else "long spread" if in_long_spread else "flat"
+        print(f"WARNING: Could not fetch positions: {e}")
+
+    etf_pos = current_positions.get(etf, 0.0)
+    in_short_spread = etf_pos < -50
+    in_long_spread  = etf_pos >  50
+
+    # Fallback: if the ETF leg didn't register (e.g. short-sell not available on paper)
+    # but constituent stocks are substantially invested, we're already in this trade.
+    stock_notional_invested = sum(abs(current_positions.get(s, 0.0)) for s in stocks)
+    if not (in_short_spread or in_long_spread) and stock_notional_invested > 500:
+        net_stock_pos   = sum(current_positions.get(s, 0.0) for s in stocks)
+        in_short_spread = net_stock_pos > 0   # bought stocks → short-spread trade
+        in_long_spread  = net_stock_pos < 0   # shorted stocks → long-spread trade
+
+    in_position = in_short_spread or in_long_spread
+    state_str   = "short spread" if in_short_spread else "long spread" if in_long_spread else "flat"
+
+    # Latest ETF price for whole-share calculation (short sells require qty, not notional)
+    etf_price  = float(etf_aligned.iloc[-1])
+    etf_shares = max(1, int(etf_notional / etf_price))
 
     print(f"\nBasket:    {etf} vs [{', '.join(stocks)}]")
     print(f"Z-score:   {current_z:+.2f}  (entry ±{z_entry}  exit ±{z_exit}  stop ±{z_stop})")
     print(f"Position:  {state_str}")
 
+    # Each order is one of:
+    #   {"symbol", "side", "notional", "note"}        → notional market order (buys/long-close)
+    #   {"symbol", "side", "qty",      "note"}        → whole-share order (ETF short sells)
+    #   {"symbol", "close_pos": True,  "note"}        → close the full existing position
     orders = []
     if in_position:
         exit_triggered = abs(current_z) < z_exit
@@ -1995,31 +2018,43 @@ def _run_trade_basket(args, acct, capital, execute=False):
         if exit_triggered or stop_triggered:
             reason = "stop-loss" if stop_triggered else "z-exit"
             print(f"Signal:    EXIT ({reason})")
-            etf_close   = OrderSide.BUY   if in_short_spread else OrderSide.SELL
-            stock_close = OrderSide.SELL  if in_short_spread else OrderSide.BUY
-            orders.append({"symbol": etf, "side": etf_close,   "notional": etf_notional, "note": "close ETF"})
-            for s, n in stock_notionals.items():
-                orders.append({"symbol": s, "side": stock_close, "notional": n, "note": "close stock"})
+            # Close every basket symbol that has an open position
+            for sym in [etf] + stocks:
+                if abs(current_positions.get(sym, 0.0)) > 10:
+                    orders.append({"symbol": sym, "close_pos": True, "note": f"close {sym}"})
         else:
             print(f"Signal:    HOLD")
     else:
         if current_z > z_entry:
             print(f"Signal:    SHORT SPREAD (ETF expensive)")
-            orders.append({"symbol": etf, "side": OrderSide.SELL, "notional": etf_notional, "note": "short ETF"})
+            # ETF short requires whole shares — fractional short-sell is not supported
+            orders.append({"symbol": etf, "side": OrderSide.SELL, "qty": etf_shares,
+                           "notional": etf_notional, "note": f"short ETF ({etf_shares} shs)"})
             for s, n in stock_notionals.items():
                 orders.append({"symbol": s, "side": OrderSide.BUY, "notional": n, "note": "long stock"})
         elif current_z < -z_entry:
             print(f"Signal:    LONG SPREAD (ETF cheap)")
-            orders.append({"symbol": etf, "side": OrderSide.BUY, "notional": etf_notional, "note": "long ETF"})
+            orders.append({"symbol": etf, "side": OrderSide.BUY, "notional": etf_notional,
+                           "note": "long ETF"})
             for s, n in stock_notionals.items():
-                orders.append({"symbol": s, "side": OrderSide.SELL, "notional": n, "note": "short stock"})
+                orders.append({"symbol": s, "side": OrderSide.SELL, "notional": n,
+                               "note": "short stock"})
         else:
             print(f"Signal:    FLAT (waiting for |z| > {z_entry})")
 
-    print(f"\n  {'Symbol':<8} {'Side':<6} {'Notional':>10}  Note")
-    print(f"  {'-'*8} {'-'*6} {'-'*10}  {'-'*15}")
+    print(f"\n  {'Symbol':<8} {'Side':<6} {'Amount':>12}  Note")
+    print(f"  {'-'*8} {'-'*6} {'-'*12}  {'-'*25}")
     for o in orders:
-        print(f"  {o['symbol']:<8} {o['side'].value:<6} ${o['notional']:>9,.0f}  {o['note']}")
+        if o.get("close_pos"):
+            amt = f"{'(close all)':>12}"
+            side_str = "close"
+        elif o.get("qty") is not None:
+            amt = f"{o['qty']:>9} shs"
+            side_str = o["side"].value
+        else:
+            amt = f"${o['notional']:>9,.0f}  "
+            side_str = o["side"].value
+        print(f"  {o['symbol']:<8} {side_str:<6} {amt}  {o['note']}")
     if not orders:
         print("  (no orders)")
 
@@ -2027,8 +2062,15 @@ def _run_trade_basket(args, acct, capital, execute=False):
         print(f"\nPlacing {len(orders)} order(s)...")
         for o in orders:
             try:
-                place_notional_order(o["symbol"], o["notional"], o["side"])
-                print(f"  {o['side'].value} {o['symbol']} ${o['notional']:,.0f} — submitted")
+                if o.get("close_pos"):
+                    close_position(o["symbol"])
+                    print(f"  close {o['symbol']} — submitted")
+                elif o.get("qty") is not None:
+                    place_qty_order(o["symbol"], o["qty"], o["side"])
+                    print(f"  {o['side'].value} {o['symbol']} {o['qty']} shs — submitted")
+                else:
+                    place_notional_order(o["symbol"], o["notional"], o["side"])
+                    print(f"  {o['side'].value} {o['symbol']} ${o['notional']:,.0f} — submitted")
             except Exception as e:
                 print(f"  ERROR on {o['symbol']}: {e}")
         print("Done.")
