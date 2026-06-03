@@ -2036,9 +2036,12 @@ def _run_trade_basket(args, acct, capital, execute=False):
             print(f"Signal:    LONG SPREAD (ETF cheap)")
             orders.append({"symbol": etf, "side": OrderSide.BUY, "notional": etf_notional,
                            "note": "long ETF"})
+            # Stock short sells require whole shares — fractional short-sell is not supported
+            stock_prices = constituent_df.iloc[-1]
             for s, n in stock_notionals.items():
-                orders.append({"symbol": s, "side": OrderSide.SELL, "notional": n,
-                               "note": "short stock"})
+                s_shares = max(1, int(n / float(stock_prices[s])))
+                orders.append({"symbol": s, "side": OrderSide.SELL, "qty": s_shares,
+                               "notional": n, "note": f"short stock ({s_shares} shs)"})
         else:
             print(f"Signal:    FLAT (waiting for |z| > {z_entry})")
 
