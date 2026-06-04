@@ -24,10 +24,13 @@ BASKETS = [
     {"etf": "XLE", "stocks": ["XOM",  "CVX",  "COP",   "SLB",  "EOG"]},
 ]
 
-Z_ENTRY = 1.5
-Z_EXIT  = 0.25
-Z_STOP  = 2.5
-WINDOW  = 60
+Z_ENTRY       = 1.5
+Z_EXIT        = 0.25
+Z_STOP        = 2.5
+WINDOW        = 60
+VIX_FILTER    = 25.0   # suppress new entries when VIX > this level
+MAX_HOLD_DAYS = 30     # force-close positions held longer than this many days
+VOL_TARGET    = 0.10   # target 10% annualised spread P&L volatility
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 EXECUTE   = "--execute" in sys.argv
@@ -51,10 +54,13 @@ def run_basket(etf: str, stocks: list) -> dict:
         "trade", "--strategy", "basket",
         "--etf", etf,
         "--stocks", *stocks,
-        "--z-entry", str(Z_ENTRY),
-        "--z-exit",  str(Z_EXIT),
-        "--z-stop",  str(Z_STOP),
-        "--window",  str(WINDOW),
+        "--z-entry",       str(Z_ENTRY),
+        "--z-exit",        str(Z_EXIT),
+        "--z-stop",        str(Z_STOP),
+        "--window",        str(WINDOW),
+        "--vix-filter",    str(VIX_FILTER),
+        "--max-hold-days", str(MAX_HOLD_DAYS),
+        "--vol-target",    str(VOL_TARGET),
     ]
     if EXECUTE:
         cmd.append("--execute")

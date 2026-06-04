@@ -1,5 +1,7 @@
 """Basket / ETF arbitrage backtest — spread-based P&L."""
 
+import math as _math
+
 import numpy as np
 import pandas as pd
 
@@ -10,28 +12,40 @@ def run_basket_backtest(
     capital: float = 20_000.0,
     cost_bps: float = 5.0,
     n_stocks: int = 1,
+    max_hold_days: int = 0,
+    vol_target: float = 0.0,
 ) -> tuple:
     """
     Spread-based backtest for basket/ETF arbitrage.
 
     The spread is in log-price units (e.g. 0.01 = 1% basis deviation).
-    Position sizing: notional = capital so that a 1% basis move earns 1% of capital.
+    Position sizing: notional = capital so that a 1% basis move earns 1% of capital,
+    unless vol_target > 0, in which case notional is scaled by target / spread_vol.
 
     cost_bps is scaled by sqrt(n_stocks / 5) to reflect execution overhead when
-    trading many instruments simultaneously (timing risk across 10-13 names vs.
-    the baseline assumption of ~5).
+    trading many instruments simultaneously.
+
+    Parameters
+    ----------
+    max_hold_days : Force-close positions held longer than this many calendar days
+                    (0 = off).
+    vol_target    : Annualised spread P&L volatility target as a fraction of capital
+                    (0 = off, e.g. 0.10 = 10%). Notional is capped at 3× capital.
 
     Returns
     -------
     (trades_df, equity_curve, metrics)
     """
-    import math as _math
     from src.backtest.metrics import compute_metrics
 
-    notional  = capital  # spread is fractional/log-price: 0.01 spread move = 1% of capital
-    # Scale cost by sqrt(n_stocks / 5): 5 stocks = 1x, 10 stocks = 1.41x, 20 stocks = 2x
     cost_scale = _math.sqrt(max(n_stocks, 1) / 5.0)
     cost_rate  = cost_bps / 10_000 * cost_scale
+
+    # Precompute annualised spread volatility for vol targeting
+    if vol_target > 0:
+        spread_vol_series = spread.rolling(30).std() * _math.sqrt(252)
+    else:
+        spread_vol_series = None
 
     trades   = []
     open_pos = None
@@ -43,14 +57,17 @@ def run_basket_backtest(
             continue
 
         if open_pos is not None:
-            unrealized = open_pos["direction"] * (s - open_pos["entry_spread"]) * notional
-
+            # Time stop: force-exit if held too long
             exit_type = None
-            if sig in ("exit", "stop"):
+            if max_hold_days > 0 and (date - open_pos["entry_date"]).days >= max_hold_days:
+                exit_type = "time_stop"
+            elif sig in ("exit", "stop"):
                 exit_type = sig
+
             if exit_type:
-                gross = unrealized
-                cost  = capital * cost_rate  # entry + exit cost
+                trade_notional = open_pos["notional"]
+                gross = open_pos["direction"] * (s - open_pos["entry_spread"]) * trade_notional
+                cost  = trade_notional * cost_rate
                 pnl   = round(gross - cost, 4)
                 trades.append({
                     "entry_date":   open_pos["entry_date"],
@@ -59,6 +76,7 @@ def run_basket_backtest(
                     "direction":    open_pos["direction"],
                     "entry_spread": open_pos["entry_spread"],
                     "exit_spread":  s,
+                    "notional":     trade_notional,
                     "pnl":          pnl,
                     "pnl_pct":      round(pnl / capital, 6),
                 })
@@ -66,10 +84,21 @@ def run_basket_backtest(
                 continue
 
         if open_pos is None and sig in ("long_spread", "short_spread"):
+            # Compute per-trade notional
+            if vol_target > 0 and spread_vol_series is not None:
+                sv = spread_vol_series.get(date, np.nan)
+                if not np.isnan(sv) and sv > 1e-8:
+                    trade_notional = min(capital * vol_target / sv, 3 * capital)
+                else:
+                    trade_notional = capital
+            else:
+                trade_notional = capital
+
             open_pos = {
                 "entry_date":   date,
                 "direction":    1 if sig == "long_spread" else -1,
                 "entry_spread": s,
+                "notional":     trade_notional,
             }
 
     if not trades:
@@ -81,28 +110,24 @@ def run_basket_backtest(
 
     trades_df = pd.DataFrame(trades)
 
-    # Build proper mark-to-market equity: track open positions day-by-day so that
-    # unrealised losses while a trade is open appear in the equity curve.
+    # Mark-to-market equity: weight each day by the per-trade notional
     all_dates = pd.bdate_range(
         start=trades_df["entry_date"].min(),
         end=trades_df["exit_date"].max(),
     )
     spread_aligned = spread.reindex(all_dates).ffill()
 
-    # Daily net position (+1 long, -1 short, 0 flat)
-    daily_pos = pd.Series(0.0, index=all_dates)
+    # Daily signed notional position (accounts for variable sizing)
+    daily_notional_pos = pd.Series(0.0, index=all_dates)
     for _, tr in trades_df.iterrows():
-        # Position is live from the bar after entry through the exit bar
         mask = (all_dates > tr["entry_date"]) & (all_dates <= tr["exit_date"])
-        daily_pos[mask] += tr["direction"]
+        daily_notional_pos[mask] += tr["direction"] * tr["notional"]
 
-    # Daily P&L = position * daily spread change * notional
-    daily_mtm = daily_pos * spread_aligned.diff().fillna(0.0) * notional
+    daily_mtm = daily_notional_pos * spread_aligned.diff().fillna(0.0)
 
-    # Deduct transaction costs on the exit bar (same total cost as before)
-    cost_per_trade = capital * cost_rate
-    exit_costs = trades_df.groupby("exit_date").size() * cost_per_trade
-    daily_mtm = daily_mtm.subtract(exit_costs.reindex(all_dates, fill_value=0.0))
+    # Deduct transaction costs on exit bars (scaled by per-trade notional)
+    exit_costs = trades_df.groupby("exit_date")["notional"].sum() * cost_rate
+    daily_mtm  = daily_mtm.subtract(exit_costs.reindex(all_dates, fill_value=0.0))
 
     equity_series = capital + daily_mtm.cumsum()
     equity_series.index.name = "date"

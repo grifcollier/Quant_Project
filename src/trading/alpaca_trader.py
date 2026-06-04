@@ -36,6 +36,18 @@ def get_positions() -> dict:
     return {p.symbol: float(p.market_value) for p in positions}
 
 
+def get_position_details() -> dict:
+    """Return positions as {symbol: {"notional": float, "created_at": datetime}}."""
+    positions = _get_client().get_all_positions()
+    return {
+        p.symbol: {
+            "notional":   float(p.market_value),
+            "created_at": p.created_at,
+        }
+        for p in positions
+    }
+
+
 def place_notional_order(symbol: str, notional: float, side) -> object:
     """
     Place a market order for a dollar notional amount.

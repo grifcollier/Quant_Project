@@ -703,7 +703,10 @@ def _run_basket(args):
     constituent_prices = constituent_prices.reindex(etf_aligned.index)
     print(f"  {len(etf_aligned)} aligned bars, {constituent_prices.shape[1]} constituents.")
 
-    walk_forward = getattr(args, "walk_forward", None)
+    walk_forward  = getattr(args, "walk_forward",  None)
+    max_hold_days = getattr(args, "max_hold_days", 0)
+    vix_filter    = getattr(args, "vix_filter",    0.0)
+    vol_target    = getattr(args, "vol_target",    0.0)
 
     print(f"Computing rolling basket spread (window={window})...")
     spread = rolling_basket_spread(etf_aligned, constituent_prices, window=window)
@@ -717,10 +720,19 @@ def _run_basket(args):
         f"Half-life: {hl_str}"
     )
 
+    vix_series = None
+    if vix_filter > 0:
+        try:
+            vix_series = fetch_price("^VIX", period=period)
+            print(f"VIX filter active (threshold: {vix_filter}).")
+        except Exception:
+            print("WARNING: Could not fetch VIX — filter disabled.")
+
     print("Generating signals...")
     signals, zscore = generate_basket_signals(
         spread, window=window,
         z_entry=args.z_entry, z_exit=args.z_exit, z_stop=args.z_stop,
+        vix_series=vix_series, vix_threshold=vix_filter,
     )
 
     params = {
@@ -749,6 +761,7 @@ def _run_basket(args):
             t, eq, m = run_basket_backtest(
                 signals.loc[fs:fe], spread.loc[fs:fe],
                 capital=running_capital, cost_bps=args.cost_bps,
+                max_hold_days=max_hold_days, vol_target=vol_target,
             )
             fold_results.append({
                 "fold": i + 1, "start": fs, "end": fe,
@@ -806,6 +819,7 @@ def _run_basket(args):
     print("Running backtest...")
     trades, equity_curve, bt_metrics = run_basket_backtest(
         signals_bt, spread_bt, capital=20_000.0, cost_bps=args.cost_bps,
+        max_hold_days=max_hold_days, vol_target=vol_target,
     )
 
     period_label = f"({test_period} test)" if test_period else ""
@@ -852,7 +866,10 @@ def _run_basket_multi(args):
     period        = args.period
     window        = args.window
     test_period   = args.test_period
-    n_folds       = getattr(args, "walk_forward", None)
+    n_folds       = getattr(args, "walk_forward",  None)
+    max_hold_days = getattr(args, "max_hold_days", 0)
+    vix_filter    = getattr(args, "vix_filter",    0.0)
+    vol_target    = getattr(args, "vol_target",    0.0)
     total_capital = 20_000.0
     leg_capital   = total_capital / len(baskets)
     fold_bars     = 252  # 1 year per fold
@@ -864,6 +881,14 @@ def _run_basket_multi(args):
     }
 
     edgar_constituents = getattr(args, "edgar_constituents", False)
+
+    vix_series = None
+    if vix_filter > 0:
+        try:
+            vix_series = fetch_price("^VIX", period=period)
+            print(f"VIX filter active (threshold: {vix_filter}).")
+        except Exception:
+            print("WARNING: Could not fetch VIX — filter disabled.")
 
     # ---- EDGAR walk-forward: point-in-time constituent history ----
     if edgar_constituents and n_folds:
@@ -965,10 +990,12 @@ def _run_basket_multi(args):
                 signals_fold, _ = generate_basket_signals(
                     spread_fold, window=window,
                     z_entry=args.z_entry, z_exit=args.z_exit, z_stop=args.z_stop,
+                    vix_series=vix_series, vix_threshold=vix_filter,
                 )
                 _, equity_fold, _ = run_basket_backtest(
                     signals_fold, spread_fold, capital=leg_capital,
                     cost_bps=args.cost_bps, n_stocks=len(available),
+                    max_hold_days=max_hold_days, vol_target=vol_target,
                 )
                 daily_pnl = equity_fold["equity"].diff().fillna(0)
                 fold_leg_pnls.append(daily_pnl.rename(etf))
@@ -1076,6 +1103,7 @@ def _run_basket_multi(args):
         signals, _ = generate_basket_signals(
             spread, window=window,
             z_entry=args.z_entry, z_exit=args.z_exit, z_stop=args.z_stop,
+            vix_series=vix_series, vix_threshold=vix_filter,
         )
 
         basket_data.append((label, spread, signals, constituent_prices.shape[1]))
@@ -1118,6 +1146,7 @@ def _run_basket_multi(args):
                 _, equity_fold, mf = run_basket_backtest(
                     signals_fold, spread_fold, capital=leg_capital,
                     cost_bps=args.cost_bps, n_stocks=n_stocks_leg,
+                    max_hold_days=max_hold_days, vol_target=vol_target,
                 )
                 fold_n_trades += mf.get("n_trades", 0)
                 wr = mf.get("win_rate")
@@ -1202,6 +1231,7 @@ def _run_basket_multi(args):
         trades, equity_curve, metrics = run_basket_backtest(
             signals_bt, spread_bt, capital=leg_capital,
             cost_bps=args.cost_bps, n_stocks=n_stocks_leg,
+            max_hold_days=max_hold_days, vol_target=vol_target,
         )
         n_t = metrics.get("n_trades", 0)
         ret = metrics.get("total_return", 0.0)
@@ -1302,6 +1332,12 @@ def _register_basket_multi(subparsers):
     parser.add_argument("--edgar-constituents", action="store_true", dest="edgar_constituents",
                         help="Use EDGAR N-PORT historical constituents for point-in-time survivorship "
                              "bias correction (requires --walk-forward).")
+    parser.add_argument("--max-hold-days", default=0, type=int, metavar="N", dest="max_hold_days",
+                        help="Force-close positions held longer than N calendar days (0 = off, e.g. 30).")
+    parser.add_argument("--vix-filter", default=0.0, type=float, metavar="LEVEL", dest="vix_filter",
+                        help="Suppress new entries when VIX > LEVEL (0 = off, e.g. 25).")
+    parser.add_argument("--vol-target", default=0.0, type=float, metavar="F", dest="vol_target",
+                        help="Annualised spread vol target as fraction of capital (0 = off, e.g. 0.10).")
     parser.set_defaults(func=_run_basket_multi)
 
 
@@ -1330,6 +1366,12 @@ def _register_basket(subparsers):
                         help="Round-trip transaction cost in basis points (default: 2.0).")
     parser.add_argument("--walk-forward", default=None, type=int, metavar="N", dest="walk_forward",
                         help="Run N non-overlapping 1-year OOS folds.")
+    parser.add_argument("--max-hold-days", default=0, type=int, metavar="N", dest="max_hold_days",
+                        help="Force-close positions held longer than N calendar days (0 = off, e.g. 30).")
+    parser.add_argument("--vix-filter", default=0.0, type=float, metavar="LEVEL", dest="vix_filter",
+                        help="Suppress new entries when VIX > LEVEL (0 = off, e.g. 25).")
+    parser.add_argument("--vol-target", default=0.0, type=float, metavar="F", dest="vol_target",
+                        help="Annualised spread vol target as fraction of capital (0 = off, e.g. 0.10).")
     parser.set_defaults(func=_run_basket)
 
 
@@ -1931,12 +1973,15 @@ def _run_trade_basket(args, acct, capital, execute=False):
     from src.trading.alpaca_trader import place_notional_order, place_qty_order, close_position
     from alpaca.trading.enums import OrderSide
 
-    etf     = args.etf.upper()
-    stocks  = [s.strip().upper() for s in args.stocks]
-    window  = getattr(args, "window",  60)
-    z_entry = getattr(args, "z_entry", 1.5)
-    z_exit  = getattr(args, "z_exit",  0.25)
-    z_stop  = getattr(args, "z_stop",  2.5)
+    etf           = args.etf.upper()
+    stocks        = [s.strip().upper() for s in args.stocks]
+    window        = getattr(args, "window",        60)
+    z_entry       = getattr(args, "z_entry",       1.5)
+    z_exit        = getattr(args, "z_exit",        0.25)
+    z_stop        = getattr(args, "z_stop",        2.5)
+    vix_filter    = getattr(args, "vix_filter",    0.0)
+    max_hold_days = getattr(args, "max_hold_days", 0)
+    vol_target    = getattr(args, "vol_target",    0.0)
 
     has_keys = bool(_os.environ.get("ALPACA_API_KEY") and _os.environ.get("ALPACA_SECRET_KEY"))
     provider = "alpaca" if has_keys else "yfinance"
@@ -1964,10 +2009,24 @@ def _run_trade_basket(args, acct, capital, execute=False):
 
     # Current OLS weights fitted on the most recent window
     coefs, _, _ = fit_basket(etf_aligned.iloc[-window:], constituent_df.iloc[-window:])
-    coef_sum     = sum(abs(c) for c in coefs)
-    etf_notional = capital / 2
+    coef_sum = sum(abs(c) for c in coefs)
+
+    if vol_target > 0:
+        import math as _math
+        sv_series = spread.rolling(30).std().dropna()
+        if len(sv_series) > 0:
+            spread_vol = float(sv_series.iloc[-1]) * _math.sqrt(252)
+            raw_notional = capital * vol_target / spread_vol if spread_vol > 1e-8 else capital
+            half_notional = min(raw_notional, capital) / 2
+        else:
+            half_notional = capital / 2
+        print(f"Vol target: {vol_target:.0%}  spread_vol: {spread_vol:.2%}  notional: ${half_notional*2:,.0f}")
+    else:
+        half_notional = capital / 2
+
+    etf_notional = half_notional
     stock_notionals = {
-        s: (abs(coefs[i]) / coef_sum) * (capital / 2)
+        s: (abs(coefs[i]) / coef_sum) * half_notional
         for i, s in enumerate(stocks)
     }
 
@@ -2011,39 +2070,77 @@ def _run_trade_basket(args, acct, capital, execute=False):
     #   {"symbol", "side", "qty",      "note"}        → whole-share order (ETF short sells)
     #   {"symbol", "close_pos": True,  "note"}        → close the full existing position
     orders = []
-    if in_position:
-        exit_triggered = abs(current_z) < z_exit
-        stop_triggered = (in_short_spread and current_z < -z_stop) or \
-                         (in_long_spread  and current_z >  z_stop)
-        if exit_triggered or stop_triggered:
-            reason = "stop-loss" if stop_triggered else "z-exit"
-            print(f"Signal:    EXIT ({reason})")
-            # Close every basket symbol that has an open position
-            for sym in [etf] + stocks:
-                if abs(current_positions.get(sym, 0.0)) > 10:
-                    orders.append({"symbol": sym, "close_pos": True, "note": f"close {sym}"})
+
+    # Time stop: close if position held too long regardless of z-score
+    time_stopped = False
+    if in_position and max_hold_days > 0:
+        try:
+            from src.trading.alpaca_trader import get_position_details
+            from datetime import date as _date
+            pos_details = get_position_details()
+            etf_detail  = pos_details.get(etf, {})
+            created_at  = etf_detail.get("created_at")
+            if created_at is not None:
+                created_date = created_at.date() if hasattr(created_at, "date") else created_at
+                hold_days    = (_date.today() - created_date).days
+                if hold_days >= max_hold_days:
+                    time_stopped = True
+                    print(f"Signal:    TIME STOP (held {hold_days}d >= {max_hold_days}d)")
+                    for sym in [etf] + stocks:
+                        if abs(current_positions.get(sym, 0.0)) > 10:
+                            orders.append({"symbol": sym, "close_pos": True,
+                                           "note": f"time-stop close {sym}"})
+        except Exception as exc:
+            print(f"  Time stop check failed: {exc}")
+
+    if not time_stopped:
+        if in_position:
+            exit_triggered = abs(current_z) < z_exit
+            stop_triggered = (in_short_spread and current_z < -z_stop) or \
+                             (in_long_spread  and current_z >  z_stop)
+            if exit_triggered or stop_triggered:
+                reason = "stop-loss" if stop_triggered else "z-exit"
+                print(f"Signal:    EXIT ({reason})")
+                for sym in [etf] + stocks:
+                    if abs(current_positions.get(sym, 0.0)) > 10:
+                        orders.append({"symbol": sym, "close_pos": True, "note": f"close {sym}"})
+            else:
+                print(f"Signal:    HOLD")
         else:
-            print(f"Signal:    HOLD")
-    else:
-        if current_z > z_entry:
-            print(f"Signal:    SHORT SPREAD (ETF expensive)")
-            # ETF short requires whole shares — fractional short-sell is not supported
-            orders.append({"symbol": etf, "side": OrderSide.SELL, "qty": etf_shares,
-                           "notional": etf_notional, "note": f"short ETF ({etf_shares} shs)"})
-            for s, n in stock_notionals.items():
-                orders.append({"symbol": s, "side": OrderSide.BUY, "notional": n, "note": "long stock"})
-        elif current_z < -z_entry:
-            print(f"Signal:    LONG SPREAD (ETF cheap)")
-            orders.append({"symbol": etf, "side": OrderSide.BUY, "notional": etf_notional,
-                           "note": "long ETF"})
-            # Stock short sells require whole shares — fractional short-sell is not supported
-            stock_prices = constituent_df.iloc[-1]
-            for s, n in stock_notionals.items():
-                s_shares = max(1, int(n / float(stock_prices[s])))
-                orders.append({"symbol": s, "side": OrderSide.SELL, "qty": s_shares,
-                               "notional": n, "note": f"short stock ({s_shares} shs)"})
-        else:
-            print(f"Signal:    FLAT (waiting for |z| > {z_entry})")
+            # VIX filter — block new entries during market stress
+            vix_blocked = False
+            if vix_filter > 0:
+                try:
+                    from src.data.fetcher import fetch_price
+                    vix_today = float(fetch_price("^VIX", period="5d").dropna().iloc[-1])
+                    print(f"VIX:       {vix_today:.1f}  (filter: >{vix_filter})")
+                    if vix_today > vix_filter:
+                        vix_blocked = True
+                        print(f"Signal:    BLOCKED (VIX={vix_today:.1f} > {vix_filter})")
+                except Exception as exc:
+                    print(f"  VIX check failed: {exc}")
+
+            if not vix_blocked:
+                if current_z > z_entry:
+                    print(f"Signal:    SHORT SPREAD (ETF expensive)")
+                    # ETF short requires whole shares — fractional short-sell is not supported
+                    orders.append({"symbol": etf, "side": OrderSide.SELL, "qty": etf_shares,
+                                   "notional": etf_notional, "note": f"short ETF ({etf_shares} shs)"})
+                    for s, n in stock_notionals.items():
+                        orders.append({"symbol": s, "side": OrderSide.BUY, "notional": n,
+                                       "note": "long stock"})
+                elif current_z < -z_entry:
+                    print(f"Signal:    LONG SPREAD (ETF cheap)")
+                    orders.append({"symbol": etf, "side": OrderSide.BUY, "notional": etf_notional,
+                                   "note": "long ETF"})
+                    # Stock short sells require whole shares — fractional short-sell is not supported
+                    stock_prices = constituent_df.iloc[-1]
+                    for s, n in stock_notionals.items():
+                        s_shares = max(1, int(n / float(stock_prices[s])))
+                        orders.append({"symbol": s, "side": OrderSide.SELL, "qty": s_shares,
+                                       "notional": n, "note": f"short stock ({s_shares} shs)"})
+                else:
+                    print(f"Signal:    FLAT (waiting for |z| > {z_entry})")
 
     print(f"\n  {'Symbol':<8} {'Side':<6} {'Amount':>12}  Note")
     print(f"  {'-'*8} {'-'*6} {'-'*12}  {'-'*25}")
@@ -2219,6 +2316,12 @@ def _register_trade(subparsers):
                         help="Z-score exit threshold (default: 0.25)")
     parser.add_argument("--z-stop", default=2.5, type=float, dest="z_stop",
                         help="Z-score stop-loss threshold (default: 2.5)")
+    parser.add_argument("--vix-filter", default=0.0, type=float, metavar="LEVEL", dest="vix_filter",
+                        help="Suppress new basket entries when VIX > LEVEL (0 = off, e.g. 25).")
+    parser.add_argument("--max-hold-days", default=0, type=int, metavar="N", dest="max_hold_days",
+                        help="Force-close basket positions held longer than N days (0 = off).")
+    parser.add_argument("--vol-target", default=0.0, type=float, metavar="F", dest="vol_target",
+                        help="Annualised spread vol target as fraction of capital (0 = off, e.g. 0.10).")
     parser.set_defaults(func=_run_trade)
 
 
