@@ -23,10 +23,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run daily basket trade (dry-run)
+      - name: Run daily basket trade
         env:
-          ALPACA_API_KEY:     ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY:  ${{ secrets.ALPACA_SECRET_KEY }}
-          ALPACA_PAPER_KEY:   ${{ secrets.ALPACA_PAPER_KEY }}
+          ALPACA_API_KEY:      ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY:   ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_PAPER_KEY:    ${{ secrets.ALPACA_PAPER_KEY }}
           ALPACA_PAPER_SECRET: ${{ secrets.ALPACA_PAPER_SECRET }}
+          GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
+          GOOGLE_SHEET_ID:     ${{ secrets.GOOGLE_SHEET_ID }}
         run: python scripts/daily_trade.py --execute

@@ -13,6 +13,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from src.trading.journal import log_trade
+
 # ── Basket configuration ──────────────────────────────────────────────────────
 BASKETS = [
     {"etf": "XLF", "stocks": ["GS",   "MS",   "JPM",   "BAC",  "C"  ]},
@@ -109,6 +111,13 @@ def main():
 
         if r["error"]:
             log(f"  !! ERROR running {b['etf']} basket")
+
+        try:
+            log_trade(r, mode)
+            log(f"  Journal: logged to Google Sheets")
+        except Exception as exc:
+            log(f"  Journal: skipped ({exc})")
+
         results.append(r)
 
     # ── Summary table ─────────────────────────────────────────────────────────
