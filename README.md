@@ -1,10 +1,8 @@
 # Quantitative Trading Platform
 
-A full-stack algorithmic trading system I built to explore quantitative strategies in practice. Started as a curiosity, turned into something I'm genuinely proud of.
+A full-stack algorithmic trading system I built from scratch in Python to explore quantitative strategies in practice — covering signal research, backtesting, walk-forward validation, Monte Carlo analysis, and automated live execution via Alpaca paper trading. Started as a curiosity, turned into something I'm genuinely proud of.
 
 ![Combined portfolio equity curve — 5 ETFs, 5y](docs/images/multi_portfolio_equity.png)
-
-A full-stack algorithmic trading system built from scratch in Python, covering signal research, backtesting, walk-forward validation, Monte Carlo analysis, and automated live execution via Alpaca paper trading.
 
 The flagship strategy is **ETF basket arbitrage** — a mean-reversion approach that trades the spread between a sector ETF and a dynamically-updated basket of its top holdings, with historically correct constituent lists sourced directly from SEC EDGAR N-PORT filings to eliminate survivorship bias.
 
