@@ -89,7 +89,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # ── Helpers ──────────────────────────────────────────────────────────────────
 @st.cache_data
 def _load_json(path: str) -> str:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return f.read()
 
 
@@ -101,8 +101,11 @@ def _figs(subdir: str) -> list[str]:
 
 
 def _show(path: str) -> None:
-    fig = pio.from_json(_load_json(path))
-    st.plotly_chart(fig, use_container_width=True)
+    try:
+        fig = pio.from_json(_load_json(path))
+        st.plotly_chart(fig, use_container_width=True, key=path)
+    except Exception as exc:
+        st.error(f"Could not render figure ({Path(path).name}): {exc}")
 
 
 def _no_data_warning() -> None:
@@ -286,11 +289,11 @@ with tab5:
                     for p in sorted(Path(tmpdir).glob("*.json"))
                 ]
 
-    for json_str in st.session_state.custom_figs:
+    for i, json_str in enumerate(st.session_state.custom_figs):
         try:
-            st.plotly_chart(pio.from_json(json_str), use_container_width=True)
+            st.plotly_chart(pio.from_json(json_str), use_container_width=True, key=f"custom_{i}")
         except Exception as exc:
-            st.error(f"Could not render figure: {exc}")
+            st.error(f"Could not render figure {i + 1}: {exc}")
 
 
 # ── Footer ────────────────────────────────────────────────────────────────────
