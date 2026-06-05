@@ -28,7 +28,7 @@ Z_ENTRY       = 1.5
 Z_EXIT        = 0.25
 Z_STOP        = 2.5
 WINDOW        = 60
-VIX_FILTER    = 25.0   # suppress new entries when VIX > this level
+VIX_FILTER    = 0.0    # suppress new entries when VIX > this level (0 = off)
 MAX_HOLD_DAYS = 30     # force-close positions held longer than this many days
 VOL_TARGET    = 0.10   # target 10% annualised spread P&L volatility
 

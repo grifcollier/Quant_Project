@@ -13,6 +13,209 @@ _AMBER   = "#e67e22"
 _PURPLE  = "#9467bd"
 
 
+def plot_basket_prices(
+    etf_prices: pd.Series,
+    basket_prices: pd.Series,
+    signals_df: pd.DataFrame,
+    etf: str,
+    stocks: list,
+    params: dict,
+    split_date=None,
+) -> go.Figure:
+    """
+    ETF price vs weighted basket price with long/short trade shading
+    and entry/exit/direction markers.
+    """
+    fig = make_subplots(rows=1, cols=1)
+
+    etf_clean    = etf_prices.dropna()
+    basket_clean = basket_prices.reindex(etf_clean.index).dropna()
+    etf_clean    = etf_clean.reindex(basket_clean.index)
+
+    # Background shading by trade direction
+    position    = signals_df["position"].reindex(etf_clean.index).ffill().fillna(0)
+    in_trade    = False
+    trade_start = None
+    trade_dir   = 0
+    for date, pos in position.items():
+        if not in_trade and pos != 0:
+            in_trade    = True
+            trade_start = date
+            trade_dir   = int(pos)
+        elif in_trade and (pos != trade_dir or date == position.index[-1]):
+            color = "rgba(44,160,44,0.12)" if trade_dir == 1 else "rgba(214,39,40,0.12)"
+            fig.add_vrect(x0=trade_start, x1=date, fillcolor=color, line_width=0)
+            if pos != 0:
+                trade_start = date
+                trade_dir   = int(pos)
+            else:
+                in_trade = False
+
+    fig.add_trace(go.Scatter(
+        x=etf_clean.index.tolist(), y=etf_clean.values,
+        mode="lines", line=dict(color=_BLUE, width=2), name=etf,
+    ))
+    fig.add_trace(go.Scatter(
+        x=basket_clean.index.tolist(), y=basket_clean.values,
+        mode="lines", line=dict(color=_ORANGE, width=2, dash="dot"),
+        name="Weighted Basket",
+    ))
+
+    long_entries  = signals_df[signals_df["signal"] == "long_spread"]
+    short_entries = signals_df[signals_df["signal"] == "short_spread"]
+    exits_sig     = signals_df[signals_df["signal"].isin(["exit", "stop", "time_stop"])]
+
+    if not long_entries.empty:
+        y_vals = etf_clean.reindex(long_entries.index)
+        fig.add_trace(go.Scatter(
+            x=long_entries.index.tolist(), y=y_vals.values,
+            mode="markers+text",
+            marker=dict(color=_GREEN, size=11, symbol="triangle-up"),
+            text=["L"] * len(long_entries),
+            textposition="top center",
+            textfont=dict(size=9, color=_GREEN),
+            name="Long Spread",
+        ))
+
+    if not short_entries.empty:
+        y_vals = etf_clean.reindex(short_entries.index)
+        fig.add_trace(go.Scatter(
+            x=short_entries.index.tolist(), y=y_vals.values,
+            mode="markers+text",
+            marker=dict(color=_RED, size=11, symbol="triangle-down"),
+            text=["S"] * len(short_entries),
+            textposition="bottom center",
+            textfont=dict(size=9, color=_RED),
+            name="Short Spread",
+        ))
+
+    if not exits_sig.empty:
+        y_vals = etf_clean.reindex(exits_sig.index)
+        fig.add_trace(go.Scatter(
+            x=exits_sig.index.tolist(), y=y_vals.values,
+            mode="markers",
+            marker=dict(color=_AMBER, size=9, symbol="x"),
+            name="Exit",
+        ))
+
+    if split_date is not None:
+        fig.add_vline(x=split_date, line_dash="dash",
+                      line_color=_AMBER, line_width=1.5)
+        fig.add_vrect(
+            x0=split_date, x1=etf_prices.index[-1],
+            fillcolor="rgba(230,126,34,0.06)", line_width=0,
+            annotation_text="Test", annotation_position="top left",
+            annotation_font=dict(color=_AMBER, size=10),
+        )
+
+    stocks_str = ", ".join(stocks[:5]) + ("..." if len(stocks) > 5 else "")
+    fig.update_layout(
+        title=dict(
+            text=f"{etf} vs Weighted Basket — {etf} vs [{stocks_str}]  |  "
+                 f"period: {params.get('period', '')}",
+            font=dict(size=16, color=_TEXT),
+        ),
+        height=500,
+        template="plotly_white",
+        hovermode="x unified",
+        showlegend=True,
+        margin=dict(l=60, r=40, t=70, b=40),
+        yaxis_title="Price ($)",
+    )
+    fig.update_xaxes(showgrid=True, gridcolor=_GRID)
+    fig.update_yaxes(gridcolor=_GRID)
+    return fig
+
+
+def plot_basket_trade_pnl(
+    trades: pd.DataFrame,
+    etf: str,
+    etf_pct: "np.ndarray",
+    basket_pct: "np.ndarray",
+) -> go.Figure:
+    """
+    Three-panel per-trade P&L breakdown.
+
+    Row 1: Total net return per trade (same as existing plot_trade_pnl).
+    Row 2: ETF leg gross contribution per trade.
+    Row 3: Basket leg gross contribution per trade.
+
+    Parameters
+    ----------
+    etf_pct    : ETF leg gross P&L as fraction of capital, one value per trade.
+    basket_pct : Basket leg gross P&L as fraction of capital, one value per trade.
+    """
+    import numpy as np
+
+    trade_nums = list(range(1, len(trades) + 1))
+
+    def _bar_colors(values):
+        return [_GREEN if v >= 0 else _RED for v in values]
+
+    def _hover(trades_iter, label):
+        return [
+            f"Trade #{i}  [{label}]<br>"
+            f"Entry: {row['entry_date'].date()}<br>"
+            f"Exit:  {row['exit_date'].date()}<br>"
+            f"Return: {v*100:.2f}%"
+            for i, (row, v) in trades_iter
+        ]
+
+    total_pct = trades["pnl_pct"].values
+
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True,
+        subplot_titles=("Total Net Return per Trade",
+                        f"{etf} Leg Gross Contribution",
+                        "Basket Leg Gross Contribution"),
+        vertical_spacing=0.14,
+        row_heights=[0.33, 0.33, 0.33],
+    )
+
+    for row_idx, (values, label) in enumerate([
+        (total_pct, "Total"),
+        (etf_pct,   etf),
+        (basket_pct,"Basket"),
+    ], start=1):
+        hover_text = [
+            f"Trade #{i}  [{label}]<br>"
+            f"Entry: {row['entry_date'].date()}<br>"
+            f"Exit:  {row['exit_date'].date()}<br>"
+            f"Return: {v*100:.2f}%"
+            for i, ((_, row), v) in enumerate(
+                zip(trades.iterrows(), values), start=1
+            )
+        ]
+        fig.add_trace(go.Bar(
+            x=trade_nums,
+            y=values * 100,
+            marker_color=_bar_colors(values),
+            hovertemplate="%{customdata}<extra></extra>",
+            customdata=hover_text,
+            name=label,
+            showlegend=False,
+        ), row=row_idx, col=1)
+        fig.add_hline(y=0, line_color=_SUBTEXT, line_width=1, row=row_idx, col=1)
+
+    fig.update_layout(
+        title=dict(
+            text=f"Per-Trade P&L Breakdown — {etf} Basket",
+            font=dict(size=16, color=_TEXT),
+        ),
+        xaxis_title="Trade #",
+        template="plotly_white",
+        height=680,
+        hovermode="x unified",
+        margin=dict(l=60, r=40, t=70, b=50),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor=_GRID)
+    fig.update_xaxes(title_text="Trade #", row=1, col=1)
+    fig.update_xaxes(title_text="Trade #", row=2, col=1)
+    fig.update_xaxes(title_text="Trade #", row=3, col=1)
+    fig.update_yaxes(title_text="Return (%)", gridcolor=_GRID)
+    return fig
+
+
 def plot_basket_spread(
     spread: pd.Series,
     zscore: pd.Series,
@@ -21,50 +224,158 @@ def plot_basket_spread(
     stocks: list,
     params: dict,
     split_date=None,
+    etf_prices: pd.Series | None = None,
+    basket_prices: pd.Series | None = None,
 ) -> go.Figure:
     """
-    Two-panel chart: basket spread (top) and z-score with signal markers (bottom).
+    Four-panel chart (when prices supplied): ETF price, basket price,
+    spread, and z-score — all sharing the x-axis.
+    Falls back to two panels (spread + z-score) when prices are not provided.
     """
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        subplot_titles=(f"Basket Spread  ({etf} vs weighted basket)", "Z-Score"),
-        vertical_spacing=0.10,
-        row_heights=[0.50, 0.50],
+    show_prices = etf_prices is not None and basket_prices is not None
+    n_rows      = 4 if show_prices else 2
+    row_heights = [0.28, 0.28, 0.22, 0.22] if show_prices else [0.50, 0.50]
+    titles      = (
+        (f"{etf} Price", "Weighted Basket Price",
+         f"Spread  ({etf} vs basket)", "Z-Score")
+        if show_prices else
+        (f"Basket Spread  ({etf} vs weighted basket)", "Z-Score")
     )
 
-    spread_clean = spread.dropna()
-    z_clean      = zscore.dropna()
+    fig = make_subplots(
+        rows=n_rows, cols=1, shared_xaxes=True,
+        subplot_titles=titles,
+        vertical_spacing=0.06,
+        row_heights=row_heights,
+    )
 
+    spread_row = 3 if show_prices else 1
+    zscore_row = 4 if show_prices else 2
+
+    # ── Row 1: ETF price ───────────────────────────────────────────────────────
+    # ── Row 2: Weighted basket price ──────────────────────────────────────────
+    if show_prices:
+        etf_clean    = etf_prices.dropna()
+        basket_clean = basket_prices.reindex(etf_clean.index).dropna()
+        etf_clean    = etf_clean.reindex(basket_clean.index)
+
+        long_entries  = signals_df[signals_df["signal"] == "long_spread"]
+        short_entries = signals_df[signals_df["signal"] == "short_spread"]
+        exits_sig     = signals_df[signals_df["signal"].isin(["exit", "stop", "time_stop"])]
+
+        # Trade-direction background shading on both price panels
+        position    = signals_df["position"].reindex(etf_clean.index).ffill().fillna(0)
+        in_trade    = False
+        trade_start = None
+        trade_dir   = 0
+        for date, pos in position.items():
+            if not in_trade and pos != 0:
+                in_trade    = True
+                trade_start = date
+                trade_dir   = int(pos)
+            elif in_trade and (pos != trade_dir or date == position.index[-1]):
+                # ETF panel: green = long ETF (long spread), red = short ETF (short spread)
+                # Basket panel: opposite — long spread = short basket, short spread = long basket
+                etf_color    = "rgba(44,160,44,0.12)" if trade_dir == 1 else "rgba(214,39,40,0.12)"
+                basket_color = "rgba(214,39,40,0.12)" if trade_dir == 1 else "rgba(44,160,44,0.12)"
+                fig.add_vrect(x0=trade_start, x1=date,
+                              fillcolor=etf_color, line_width=0, row=1, col=1)
+                fig.add_vrect(x0=trade_start, x1=date,
+                              fillcolor=basket_color, line_width=0, row=2, col=1)
+                if pos != 0:
+                    trade_start = date
+                    trade_dir   = int(pos)
+                else:
+                    in_trade = False
+
+        # ETF price line
+        fig.add_trace(go.Scatter(
+            x=etf_clean.index.tolist(), y=etf_clean.values,
+            mode="lines", line=dict(color=_BLUE, width=1.8), name=etf,
+        ), row=1, col=1)
+
+        # Basket price line
+        fig.add_trace(go.Scatter(
+            x=basket_clean.index.tolist(), y=basket_clean.values,
+            mode="lines", line=dict(color=_ORANGE, width=1.8), name="Basket",
+        ), row=2, col=1)
+
+        # Markers — basket panel is the INVERSE of the ETF panel:
+        #   long spread  → long ETF (L↑ green)  / short basket (S↓ red)
+        #   short spread → short ETF (S↓ red)   / long basket  (L↑ green)
+        panels = [
+            # (row, price_series, buy_signals,   buy_label, sell_signals,  sell_label)
+            (1, etf_clean,    long_entries,  "L↑ ETF",      short_entries, "S↓ ETF"),
+            (2, basket_clean, short_entries, "L↑ Basket",   long_entries,  "S↓ Basket"),
+        ]
+        for row_idx, price_series, buy_sigs, buy_name, sell_sigs, sell_name in panels:
+            show = (row_idx == 1)
+            if not buy_sigs.empty:
+                y_vals = price_series.reindex(buy_sigs.index)
+                fig.add_trace(go.Scatter(
+                    x=buy_sigs.index.tolist(), y=y_vals.values,
+                    mode="markers+text",
+                    marker=dict(color=_GREEN, size=10, symbol="triangle-up"),
+                    text=["L"] * len(buy_sigs),
+                    textposition="top center",
+                    textfont=dict(size=8, color=_GREEN),
+                    name=buy_name, showlegend=show,
+                ), row=row_idx, col=1)
+
+            if not sell_sigs.empty:
+                y_vals = price_series.reindex(sell_sigs.index)
+                fig.add_trace(go.Scatter(
+                    x=sell_sigs.index.tolist(), y=y_vals.values,
+                    mode="markers+text",
+                    marker=dict(color=_RED, size=10, symbol="triangle-down"),
+                    text=["S"] * len(sell_sigs),
+                    textposition="bottom center",
+                    textfont=dict(size=8, color=_RED),
+                    name=sell_name, showlegend=show,
+                ), row=row_idx, col=1)
+
+            if not exits_sig.empty:
+                y_vals = price_series.reindex(exits_sig.index)
+                fig.add_trace(go.Scatter(
+                    x=exits_sig.index.tolist(), y=y_vals.values,
+                    mode="markers",
+                    marker=dict(color=_AMBER, size=8, symbol="x"),
+                    name="Exit", showlegend=show,
+                ), row=row_idx, col=1)
+
+    # ── Spread panel ──────────────────────────────────────────────────────────
+    spread_clean = spread.dropna()
     fig.add_trace(go.Scatter(
         x=spread_clean.index.tolist(), y=spread_clean.values,
         mode="lines", line=dict(color=_BLUE, width=1.5), name="Spread",
-    ), row=1, col=1)
+        showlegend=not show_prices,
+    ), row=spread_row, col=1)
     fig.add_hline(y=float(spread_clean.mean()), line_dash="dash",
-                  line_color=_SUBTEXT, line_width=1, row=1, col=1)
+                  line_color=_SUBTEXT, line_width=1, row=spread_row, col=1)
 
+    # ── Z-score panel ─────────────────────────────────────────────────────────
+    z_clean = zscore.dropna()
     fig.add_trace(go.Scatter(
         x=z_clean.index.tolist(), y=z_clean.values,
         mode="lines", line=dict(color=_PURPLE, width=1.5), name="Z-Score",
-    ), row=2, col=1)
+        showlegend=not show_prices,
+    ), row=zscore_row, col=1)
 
     z_entry = params.get("z_entry", 2.0)
     z_exit  = params.get("z_exit", 0.5)
     z_stop  = params.get("z_stop", 3.0)
 
     for val, clr, dash in [
-        ( z_entry, _GREEN,   "dash"),
-        (-z_entry, _RED,     "dash"),
-        ( z_stop,  _RED,     "dot"),
-        (-z_stop,  _GREEN,   "dot"),
+        ( z_entry, _GREEN, "dash"), (-z_entry, _RED,   "dash"),
+        ( z_stop,  _RED,   "dot"),  (-z_stop,  _GREEN, "dot"),
     ]:
         fig.add_hline(y=val, line_dash=dash, line_color=clr,
-                      line_width=1, row=2, col=1)
+                      line_width=1, row=zscore_row, col=1)
     fig.add_hrect(y0=-z_exit, y1=z_exit, fillcolor="rgba(44,160,44,0.06)",
-                  line_width=0, row=2, col=1)
+                  line_width=0, row=zscore_row, col=1)
 
-    # Entry / exit markers on z-score panel
     entries = signals_df[signals_df["signal"].isin(["long_spread", "short_spread"])]
-    exits   = signals_df[signals_df["signal"].isin(["exit", "stop"])]
+    exits   = signals_df[signals_df["signal"].isin(["exit", "stop", "time_stop"])]
 
     if not entries.empty:
         z_at_entry = zscore.reindex(entries.index)
@@ -72,8 +383,8 @@ def plot_basket_spread(
             x=entries.index.tolist(), y=z_at_entry.values,
             mode="markers",
             marker=dict(color=_GREEN, size=8, symbol="triangle-up"),
-            name="Entry",
-        ), row=2, col=1)
+            name="Entry", showlegend=not show_prices,
+        ), row=zscore_row, col=1)
 
     if not exits.empty:
         z_at_exit = zscore.reindex(exits.index)
@@ -81,12 +392,12 @@ def plot_basket_spread(
             x=exits.index.tolist(), y=z_at_exit.values,
             mode="markers",
             marker=dict(color=_RED, size=8, symbol="triangle-down"),
-            name="Exit",
-        ), row=2, col=1)
+            name="Exit", showlegend=not show_prices,
+        ), row=zscore_row, col=1)
 
-    # Train / test boundary
+    # ── Train/test boundary ───────────────────────────────────────────────────
     if split_date is not None:
-        for r in (1, 2):
+        for r in range(1, n_rows + 1):
             fig.add_vline(x=split_date, line_dash="dash",
                           line_color=_AMBER, line_width=1.5, row=r, col=1)
         fig.add_vrect(
@@ -99,10 +410,10 @@ def plot_basket_spread(
     stocks_str = ", ".join(stocks[:5]) + ("..." if len(stocks) > 5 else "")
     fig.update_layout(
         title=dict(
-            text=f"Basket Spread -- {etf} vs [{stocks_str}]",
+            text=f"Basket — {etf} vs [{stocks_str}]  |  period: {params.get('period', '')}",
             font=dict(size=16, color=_TEXT),
         ),
-        height=580,
+        height=880 if show_prices else 580,
         template="plotly_white",
         hovermode="x unified",
         showlegend=True,
@@ -110,6 +421,11 @@ def plot_basket_spread(
     )
     fig.update_xaxes(showgrid=True, gridcolor=_GRID)
     fig.update_yaxes(gridcolor=_GRID)
+    if show_prices:
+        fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+        fig.update_yaxes(title_text="Price ($)", row=2, col=1)
+    fig.update_yaxes(title_text="Spread",  row=spread_row, col=1)
+    fig.update_yaxes(title_text="Z-Score", row=zscore_row, col=1)
     return fig
 
 

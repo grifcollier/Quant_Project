@@ -5,6 +5,7 @@ import sys
 import tempfile
 import webbrowser
 
+import numpy as np
 import pandas as pd
 
 from src.data.fetcher import fetch_pair, fetch_price
@@ -840,15 +841,36 @@ def _run_basket(args):
         f"Sharpe {bt_metrics['sharpe']:.2f}"
     )
 
+    # Weighted basket price: exp(log(etf) - spread) = etf * exp(-spread)
+    basket_prices = (etf_aligned * np.exp(-spread)).dropna()
+
     print("Opening windows...")
     _show(
-        plot_basket_spread(spread, zscore, signals, etf, stocks, params, split_date=split_date),
+        plot_basket_spread(
+            spread, zscore, signals, etf, stocks, params,
+            split_date=split_date,
+            etf_prices=etf_aligned,
+            basket_prices=basket_prices,
+        ),
         f"Basket — {etf} — Spread",
     )
     if not trades.empty:
         _show(plot_equity_curve(equity_curve, trades, etf, "BASKET", 20_000.0),
               f"Basket — {etf} — Equity")
-        _show(plot_trade_pnl(trades, etf, "BASKET"),
+
+        # Per-leg P&L breakdown: ETF leg and basket leg contributions
+        from src.strategies.basket.viz import plot_basket_trade_pnl
+        etf_at_entry    = etf_aligned.reindex(trades["entry_date"]).values
+        etf_at_exit     = etf_aligned.reindex(trades["exit_date"]).values
+        basket_at_entry = basket_prices.reindex(trades["entry_date"]).values
+        basket_at_exit  = basket_prices.reindex(trades["exit_date"]).values
+        etf_log_ret     = np.log(etf_at_exit / etf_at_entry)
+        basket_log_ret  = np.log(basket_at_exit / basket_at_entry)
+        direction       = trades["direction"].values
+        notional        = trades["notional"].values
+        etf_pct_arr     = direction *  etf_log_ret    * notional / 20_000.0
+        basket_pct_arr  = direction * -basket_log_ret * notional / 20_000.0
+        _show(plot_basket_trade_pnl(trades, etf, etf_pct_arr, basket_pct_arr),
               f"Basket — {etf} — Trade P&L")
         _show(plot_backtest_metrics(bt_metrics, trades, etf, "BASKET", params),
               f"Basket — {etf} — Metrics")
@@ -856,7 +878,7 @@ def _run_basket(args):
         if getattr(args, "monte_carlo", False):
             from src.backtest.monte_carlo import bootstrap_returns
             from src.strategies.basket.viz import plot_monte_carlo
-            n_sims = getattr(args, "mc_sims", 5_000)
+            n_sims = getattr(args, "mc_sims", 10_000)
             print(f"Running Monte Carlo bootstrap ({n_sims:,} sims, daily returns)...")
             mc = bootstrap_returns(equity_curve, capital=20_000.0, n_sims=n_sims)
             _print_mc_summary(mc)
@@ -1078,7 +1100,7 @@ def _run_basket_multi(args):
     )
 
     # ---- Phase 1: Fetch data and compute signals for all baskets ----
-    basket_data = []  # (label, spread, signals, n_stocks)
+    basket_data = []  # (label, spread, signals, n_stocks, etf_aligned, stocks)
 
     for etf, stocks in baskets:
         label = etf
@@ -1127,7 +1149,7 @@ def _run_basket_multi(args):
             vix_series=vix_series, vix_threshold=vix_filter,
         )
 
-        basket_data.append((label, spread, signals, constituent_prices.shape[1]))
+        basket_data.append((label, spread, signals, constituent_prices.shape[1], etf_aligned, stocks))
 
     if not basket_data:
         print("ERROR: No baskets ran successfully.")
@@ -1146,7 +1168,7 @@ def _run_basket_multi(args):
             fold_n_trades  = 0
             fold_win_rates = []
 
-            for label, spread, signals, n_stocks_leg in basket_data:
+            for label, spread, signals, n_stocks_leg, *_ in basket_data:
                 T = len(spread)
                 fold_start_idx = T - (n_folds - fold_k) * fold_bars
                 fold_end_idx   = min(T - (n_folds - fold_k - 1) * fold_bars, T)
@@ -1225,16 +1247,17 @@ def _run_basket_multi(args):
         print("Opening windows...")
         _show(
             plot_walk_forward_results(stitched_equity, fold_combined_metrics, overall, params),
-            f"Walk-Forward -- {' + '.join(lb for lb, _, _, _ in basket_data)}",
+            f"Walk-Forward -- {' + '.join(lb for lb, *_ in basket_data)}",
         )
         return
 
     # ---- Phase 2b: Single OOS mode (existing behaviour) ----
     leg_equities = {}
     leg_metrics  = {}
+    leg_extras   = {}   # label → {trades, etf_aligned, basket_prices, spread, signals, stocks}
     daily_pnls   = []
 
-    for label, spread, signals, n_stocks_leg in basket_data:
+    for label, spread, signals, n_stocks_leg, etf_aligned, stocks in basket_data:
         T = len(spread)
         split_date = None
         if test_period:
@@ -1261,6 +1284,14 @@ def _run_basket_multi(args):
 
         leg_equities[label] = equity_curve
         leg_metrics[label]  = metrics
+        leg_extras[label]   = {
+            "trades":        trades,
+            "etf_aligned":   etf_aligned,
+            "basket_prices": etf_aligned * np.exp(-spread),
+            "spread":        spread,
+            "signals":       signals,
+            "stocks":        stocks,
+        }
 
         daily_pnl = equity_curve["equity"].diff().fillna(0)
         daily_pnls.append(daily_pnl.rename(label))
@@ -1316,12 +1347,46 @@ def _run_basket_multi(args):
     if getattr(args, "monte_carlo", False):
         from src.backtest.monte_carlo import bootstrap_returns
         from src.strategies.basket.viz import plot_monte_carlo
-        n_sims = getattr(args, "mc_sims", 5_000)
+        n_sims = getattr(args, "mc_sims", 10_000)
         print(f"Running Monte Carlo bootstrap ({n_sims:,} sims, daily-returns)...")
         mc = bootstrap_returns(combined_equity, capital=total_capital, n_sims=n_sims)
         _print_mc_summary(mc)
         _show(plot_monte_carlo(mc, combined_metrics, "Portfolio", params),
               "Basket Portfolio -- Monte Carlo")
+
+    # Per-leg spread and trade P&L breakdown charts
+    from src.strategies.basket.viz import plot_basket_spread, plot_basket_trade_pnl
+    from src.strategies.pairs.signals import compute_zscore as _compute_zscore
+    for lbl, extra in leg_extras.items():
+        etf_al   = extra["etf_aligned"]
+        basket_p = extra["basket_prices"]
+        spread_l = extra["spread"]
+        signals_l = extra["signals"]
+        stocks_l  = extra["stocks"]
+        trades_l  = extra["trades"]
+        zscore_l  = _compute_zscore(spread_l, window=window)
+
+        _show(
+            plot_basket_spread(spread_l, zscore_l, signals_l, lbl, stocks_l, params,
+                               etf_prices=etf_al, basket_prices=basket_p),
+            f"Basket — {lbl} — Spread",
+        )
+
+        if not trades_l.empty:
+            etf_at_entry = etf_al.reindex(trades_l["entry_date"]).values
+            etf_at_exit  = etf_al.reindex(trades_l["exit_date"]).values
+            bsk_at_entry = basket_p.reindex(trades_l["entry_date"]).values
+            bsk_at_exit  = basket_p.reindex(trades_l["exit_date"]).values
+            etf_log_ret  = np.log(etf_at_exit  / etf_at_entry)
+            bsk_log_ret  = np.log(bsk_at_exit  / bsk_at_entry)
+            direction    = trades_l["direction"].values
+            notional     = trades_l["notional"].values
+            etf_pct_arr  = direction *  etf_log_ret * notional / leg_capital
+            bsk_pct_arr  = direction * -bsk_log_ret * notional / leg_capital
+            _show(
+                plot_basket_trade_pnl(trades_l, lbl, etf_pct_arr, bsk_pct_arr),
+                f"Basket — {lbl} — Trade P&L",
+            )
 
 
 def _register_basket_multi(subparsers):
@@ -1371,7 +1436,7 @@ def _register_basket_multi(subparsers):
                         help="Annualised spread vol target as fraction of capital (0 = off, e.g. 0.10).")
     parser.add_argument("--monte-carlo", action="store_true", dest="monte_carlo",
                         help="Run Monte Carlo bootstrap on combined portfolio after backtest.")
-    parser.add_argument("--mc-sims", default=5_000, type=int, dest="mc_sims",
+    parser.add_argument("--mc-sims", default=10_000, type=int, dest="mc_sims",
                         help="Number of Monte Carlo simulations (default: 5000).")
     parser.set_defaults(func=_run_basket_multi)
 
@@ -1409,7 +1474,7 @@ def _register_basket(subparsers):
                         help="Annualised spread vol target as fraction of capital (0 = off, e.g. 0.10).")
     parser.add_argument("--monte-carlo", action="store_true", dest="monte_carlo",
                         help="Run Monte Carlo bootstrap on trade P&L after backtest.")
-    parser.add_argument("--mc-sims", default=5_000, type=int, dest="mc_sims",
+    parser.add_argument("--mc-sims", default=10_000, type=int, dest="mc_sims",
                         help="Number of Monte Carlo simulations (default: 5000).")
     parser.set_defaults(func=_run_basket)
 
