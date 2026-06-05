@@ -485,9 +485,9 @@ def _register_pairs(subparsers):
                         help="Hold out the most recent PERIOD as an out-of-sample test window. "
                              "ADF, half-life, and rolling window are calibrated on the earlier data only. "
                              "Backtest runs on the test window. Example: --period 5y --test-period 1y")
-    parser.add_argument("--walk-forward", default=None, type=int, nargs="?", const=-1,
+    parser.add_argument("--walk-forward", default=None, type=int, metavar="N",
                         dest="walk_forward",
-                        help="Run walk-forward validation. Optionally pass N folds; omit N to auto-derive from --period.")
+                        help="Run N non-overlapping 1-year OOS folds (requires --backtest; overrides --test-period)")
     parser.add_argument("--max-hold-days", type=int, default=0, metavar="N",
                         help="Time stop: close trade if still open after N days (default: 0 = auto, 3× half-life).")
     parser.add_argument("--dollar-stop", type=float, default=5.0, metavar="PCT",
@@ -832,6 +832,68 @@ def _run_basket_dynamic(args):
         "period": period, "window": window,
         "z_entry": args.z_entry, "z_exit": args.z_exit, "z_stop": args.z_stop,
     }
+
+    walk_forward = getattr(args, "walk_forward", None)
+    if walk_forward == -1:
+        period_years = {"1y": 1, "2y": 2, "3y": 3, "5y": 5, "10y": 10}.get(period, 5)
+        walk_forward = max(1, period_years - 1)
+
+    if walk_forward:
+        from src.backtest.metrics import compute_metrics as _cm
+        from src.strategies.basket.viz import plot_walk_forward_results
+        fold_bars = 252
+        T = len(signals)
+        fold_results, all_fold_trades, equity_pieces_wf = [], [], []
+        running_capital_wf = capital
+
+        for i in range(walk_forward):
+            start_idx = T - (walk_forward - i) * fold_bars
+            end_idx   = min(T - (walk_forward - i - 1) * fold_bars, T) - 1
+            if start_idx < window + 10:
+                continue
+            fs = signals.index[start_idx]
+            fe = signals.index[end_idx]
+            t, eq, m = run_basket_backtest(
+                signals.loc[fs:fe], spread.loc[fs:fe],
+                capital=running_capital_wf, cost_bps=args.cost_bps,
+                n_stocks=top_n, max_hold_days=max_hold_days, vol_target=vol_target,
+            )
+            fold_results.append({
+                "fold": i + 1, "start": fs, "end": fe,
+                **{k: m[k] for k in ("n_trades", "total_return", "sharpe",
+                                     "sortino", "max_drawdown", "win_rate")},
+            })
+            all_fold_trades.append(t)
+            equity_pieces_wf.append(eq)
+            running_capital_wf = float(eq["equity"].iloc[-1])
+            print(f"  Fold {i+1} ({fs.date()} to {fe.date()}): "
+                  f"{m['n_trades']} trades  |  "
+                  f"{m['total_return']:.1%} return  |  "
+                  f"Sharpe {m['sharpe']:.2f}")
+
+        if not fold_results:
+            print("Not enough data for walk-forward folds.")
+            return
+
+        stitched_wf = pd.concat(equity_pieces_wf)
+        overall_wf  = _cm(
+            stitched_wf,
+            pd.concat(all_fold_trades) if any(not t.empty for t in all_fold_trades) else pd.DataFrame(),
+            capital,
+        )
+        n_total     = sum(r["n_trades"] for r in fold_results)
+        mean_ret    = sum(r["total_return"] for r in fold_results) / len(fold_results)
+        mean_sharpe = sum(r["sharpe"] for r in fold_results) / len(fold_results)
+        print(f"\nWalk-Forward ({len(fold_results)} folds): "
+              f"{n_total} total trades  |  "
+              f"{mean_ret:.1%} avg fold return  |  "
+              f"Sharpe {mean_sharpe:.2f} avg")
+        _show(
+            plot_walk_forward_results(stitched_wf, fold_results, overall_wf,
+                                      {**params, "cost_bps": args.cost_bps}),
+            f"Basket (dynamic) — {etf} — Walk-Forward Summary",
+        )
+        return
 
     print("Opening windows...")
     _show(
@@ -1850,8 +1912,9 @@ def _register_basket(subparsers):
                         help="Price data source: yfinance (default) or alpaca.")
     parser.add_argument("--cost-bps", default=2.0, type=float, metavar="BPS",
                         help="Round-trip transaction cost in basis points (default: 2.0).")
-    parser.add_argument("--walk-forward", default=None, type=int, metavar="N", dest="walk_forward",
-                        help="Run N non-overlapping 1-year OOS folds.")
+    parser.add_argument("--walk-forward", default=None, type=int, nargs="?", const=-1,
+                        dest="walk_forward",
+                        help="Run walk-forward validation. Optionally pass N folds; omit N to auto-derive from --period.")
     parser.add_argument("--max-hold-days", default=0, type=int, metavar="N", dest="max_hold_days",
                         help="Force-close positions held longer than N calendar days (0 = off, e.g. 30).")
     parser.add_argument("--vix-filter", default=0.0, type=float, metavar="LEVEL", dest="vix_filter",
