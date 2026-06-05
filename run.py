@@ -22,8 +22,31 @@ from src.strategies.pairs.viz import (
 )
 
 
+_SAVE_IMAGES_DIR: str | None = None  # set by --save-images flag
+_SAVE_FIGS_DIR:   str | None = None  # set by --save-figs flag
+
+
 def _show(fig, title: str, static: bool = False) -> None:
-    """Open a Plotly figure in the browser with a named tab title."""
+    """Open a Plotly figure in the browser; export PNG/JSON if save flags are set."""
+    if _SAVE_IMAGES_DIR is not None:
+        import os, re
+        os.makedirs(_SAVE_IMAGES_DIR, exist_ok=True)
+        slug = re.sub(r"[^\w\-]", "_", title).strip("_").lower()
+        out  = os.path.join(_SAVE_IMAGES_DIR, f"{slug}.png")
+        fig.write_image(out, width=1400, height=800, scale=2)
+        print(f"  Saved: {out}")
+
+    if _SAVE_FIGS_DIR is not None:
+        import os, re
+        os.makedirs(_SAVE_FIGS_DIR, exist_ok=True)
+        n = len([f for f in os.listdir(_SAVE_FIGS_DIR) if f.endswith(".json")])
+        slug = re.sub(r"[^\w\-]", "_", title).strip("_").lower()
+        out = os.path.join(_SAVE_FIGS_DIR, f"{n + 1:03d}_{slug}.json")
+        with open(out, "w") as f:
+            f.write(fig.to_json())
+        print(f"  Saved fig: {out}")
+        return  # skip browser when saving figures
+
     html = fig.to_html(full_html=True, include_plotlyjs=True)
     html = html.replace("<head>", f"<head><title>{title}</title>", 1)
     with tempfile.NamedTemporaryFile(
@@ -847,6 +870,10 @@ def _run_basket_dynamic(args):
 
 
 def _run_basket(args):
+    global _SAVE_IMAGES_DIR, _SAVE_FIGS_DIR
+    _SAVE_IMAGES_DIR = getattr(args, "save_images", None)
+    _SAVE_FIGS_DIR   = getattr(args, "save_figs",   None)
+
     from src.data.fetcher import fetch_price
     from src.analytics.stationarity import adf_test, compute_half_life
     from src.analytics.basket import rolling_basket_spread
@@ -1078,6 +1105,10 @@ def _run_basket(args):
 
 
 def _run_basket_multi(args):
+    global _SAVE_IMAGES_DIR, _SAVE_FIGS_DIR
+    _SAVE_IMAGES_DIR = getattr(args, "save_images", None)
+    _SAVE_FIGS_DIR   = getattr(args, "save_figs",   None)
+
     import math as _math
     from src.data.fetcher import fetch_price
     from src.analytics.stationarity import adf_test, compute_half_life
@@ -1778,6 +1809,10 @@ def _register_basket_multi(subparsers):
                         help="Run Monte Carlo bootstrap on combined portfolio after backtest.")
     parser.add_argument("--mc-sims", default=10_000, type=int, dest="mc_sims",
                         help="Number of Monte Carlo simulations (default: 5000).")
+    parser.add_argument("--save-images", default=None, metavar="DIR", dest="save_images",
+                        help="Export all figures as PNG files to DIR (requires kaleido).")
+    parser.add_argument("--save-figs", default=None, metavar="DIR", dest="save_figs",
+                        help="Save all figures as Plotly JSON to DIR (used by Streamlit app).")
     parser.set_defaults(func=_run_basket_multi)
 
 
@@ -1824,6 +1859,10 @@ def _register_basket(subparsers):
                         help="Run Monte Carlo bootstrap on trade P&L after backtest.")
     parser.add_argument("--mc-sims", default=10_000, type=int, dest="mc_sims",
                         help="Number of Monte Carlo simulations (default: 5000).")
+    parser.add_argument("--save-images", default=None, metavar="DIR", dest="save_images",
+                        help="Export all figures as PNG files to DIR (requires kaleido).")
+    parser.add_argument("--save-figs", default=None, metavar="DIR", dest="save_figs",
+                        help="Save all figures as Plotly JSON to DIR (used by Streamlit app).")
     parser.set_defaults(func=_run_basket)
 
 
