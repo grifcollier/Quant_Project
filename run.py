@@ -485,9 +485,9 @@ def _register_pairs(subparsers):
                         help="Hold out the most recent PERIOD as an out-of-sample test window. "
                              "ADF, half-life, and rolling window are calibrated on the earlier data only. "
                              "Backtest runs on the test window. Example: --period 5y --test-period 1y")
-    parser.add_argument("--walk-forward", default=None, type=int, metavar="N",
+    parser.add_argument("--walk-forward", default=None, type=int, nargs="?", const=-1,
                         dest="walk_forward",
-                        help="Run N non-overlapping 1-year OOS folds (requires --backtest; overrides --test-period)")
+                        help="Run walk-forward validation. Optionally pass N folds; omit N to auto-derive from --period.")
     parser.add_argument("--max-hold-days", type=int, default=0, metavar="N",
                         help="Time stop: close trade if still open after N days (default: 0 = auto, 3× half-life).")
     parser.add_argument("--dollar-stop", type=float, default=5.0, metavar="PCT",
@@ -934,6 +934,9 @@ def _run_basket(args):
     print(f"  {len(etf_aligned)} aligned bars, {constituent_prices.shape[1]} constituents.")
 
     walk_forward  = getattr(args, "walk_forward",  None)
+    if walk_forward == -1:
+        period_years = {"1y": 1, "2y": 2, "3y": 3, "5y": 5, "10y": 10}.get(period, 5)
+        walk_forward = max(1, period_years - 1)
     max_hold_days = getattr(args, "max_hold_days", 0)
     vix_filter    = getattr(args, "vix_filter",    0.0)
     vol_target    = getattr(args, "vol_target",    0.0)
