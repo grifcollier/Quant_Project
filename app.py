@@ -28,13 +28,51 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── Key metrics row ──────────────────────────────────────────────────────────
+# ── Period selector ───────────────────────────────────────────────────────────
+period_choice = st.radio(
+    "Backtest period",
+    ["5y", "10y"],
+    horizontal=True,
+    help="Switch between 5-year and 10-year pre-computed results.",
+)
+sfx = "_10y" if period_choice == "10y" else ""
+
+if period_choice == "10y":
+    st.info(
+        "**Note on pre-2019 data:** SEC N-PORT filings only became mandatory in "
+        "April 2019. For the period **2016–Nov 2019**, each ETF's basket uses the "
+        "earliest available N-PORT filing as a static fallback "
+        "(XLF: BRK-B/JPM/BAC/WFC/C · XLK: MSFT/AAPL/V/MA/INTC · "
+        "XLV: JNJ/MRK/UNH/PFE/ABT · XLI: BA/HON/UNP/LMT/MMM · "
+        "XLE: XOM/CVX/COP/PSX/SLB). "
+        "These are plausible top-5 holdings for that era but are not verified "
+        "quarter-by-quarter the way post-2019 data is."
+    )
+
+# ── Key metrics row ───────────────────────────────────────────────────────────
+if period_choice == "5y":
+    m = {
+        "ret": "42.2%",  "ret_d": "5 ETF combined",
+        "sr":  "4.59",   "sr_d":  "Combined portfolio",
+        "dd":  "−0.7%",  "dd_d":  "Worst peak-to-trough",
+        "oos": "33.6%",  "oos_d": "4 folds × 1y",
+        "mc":  "50.9%",  "mc_d":  "MC 95th pct · 10k sims",
+    }
+else:
+    m = {
+        "ret": "91.2%",  "ret_d": "5 ETF combined",
+        "sr":  "4.61",   "sr_d":  "Combined portfolio",
+        "dd":  "−0.7%",  "dd_d":  "Worst peak-to-trough",
+        "oos": "81.9%",  "oos_d": "9 folds × 1y",
+        "mc":  "106.2%", "mc_d":  "MC 95th pct · 10k sims",
+    }
+
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("5y Portfolio Return", "42.2%",  "5 ETF combined")
-c2.metric("Sharpe Ratio",        "4.59",   "Combined portfolio")
-c3.metric("Max Drawdown",        "−0.7%",  "Worst peak-to-trough")
-c4.metric("OOS Walk-Forward",    "33.6%",  "4 folds × 1y")
-c5.metric("MC 95th Percentile",  "50.9%",  "10,000 sims")
+c1.metric(f"{period_choice} Portfolio Return", m["ret"],  m["ret_d"])
+c2.metric("Sharpe Ratio",                      m["sr"],   m["sr_d"])
+c3.metric("Max Drawdown",                      m["dd"],   m["dd_d"])
+c4.metric("OOS Walk-Forward",                  m["oos"],  m["oos_d"])
+c5.metric("MC 95th Percentile",                m["mc"],   m["mc_d"])
 
 st.divider()
 
@@ -85,7 +123,7 @@ with tab1:
     well above any individual leg.
     """)
 
-    figs = _figs("portfolio")
+    figs = _figs(f"portfolio{sfx}")
     if not figs:
         _no_data_warning()
     else:
@@ -101,13 +139,24 @@ with tab2:
     single continuous OOS track record — a more rigorous test than a single train/test split.
     """)
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Fold 1 Return", "6.0%",  "Sharpe 4.12")
-    col2.metric("Fold 2 Return", "8.2%",  "Sharpe 5.40")
-    col3.metric("Fold 3 Return", "8.7%",  "Sharpe 4.80")
-    col4.metric("Fold 4 Return", "10.7%", "Sharpe 5.07")
+    if period_choice == "5y":
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Fold 1 Return", "6.0%",  "Sharpe 4.12")
+        col2.metric("Fold 2 Return", "8.2%",  "Sharpe 5.40")
+        col3.metric("Fold 3 Return", "8.7%",  "Sharpe 4.80")
+        col4.metric("Fold 4 Return", "10.7%", "Sharpe 5.07")
+    else:
+        cols = st.columns(5)
+        data = [("11.0%","5.43"),("12.2%","5.18"),("9.9%","3.98"),
+                ("6.7%","3.66"),("8.6%","4.74")]
+        for i, (r, s) in enumerate(data):
+            cols[i].metric(f"Fold {i+1}", r, f"Sharpe {s}")
+        cols2 = st.columns(4)
+        data2 = [("6.0%","4.12"),("8.2%","5.40"),("8.7%","4.80"),("10.7%","5.07")]
+        for i, (r, s) in enumerate(data2):
+            cols2[i].metric(f"Fold {i+6}", r, f"Sharpe {s}")
 
-    figs = _figs("walkforward")
+    figs = _figs(f"walkforward{sfx}")
     if not figs:
         _no_data_warning()
     else:
@@ -122,12 +171,18 @@ with tab3:
     or whether the strategy got lucky with the specific sequence of returns.
     """)
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("5th Percentile Return",  "34.3%")
-    col2.metric("Median Return",          "42.1%")
-    col3.metric("95th Percentile Return", "50.9%")
+    if period_choice == "5y":
+        col1, col2, col3 = st.columns(3)
+        col1.metric("5th Percentile Return",  "34.3%")
+        col2.metric("Median Return",          "42.1%")
+        col3.metric("95th Percentile Return", "50.9%")
+    else:
+        col1, col2, col3 = st.columns(3)
+        col1.metric("5th Percentile Return",  "77.7%")
+        col2.metric("Median Return",          "91.0%")
+        col3.metric("95th Percentile Return", "106.2%")
 
-    figs = _figs("portfolio")
+    figs = _figs(f"portfolio{sfx}")
     if not figs:
         _no_data_warning()
     elif len(figs) >= 3:
@@ -143,7 +198,7 @@ with tab4:
     top-5 in 2021; AVGO and PLTR entered later.
     """)
 
-    figs = _figs("xlk")
+    figs = _figs(f"xlk{sfx}")
     if not figs:
         _no_data_warning()
     else:
@@ -167,7 +222,7 @@ with tab5:
         with col1:
             mode    = st.selectbox("Mode", ["Single ETF", "Multi-basket (all 5 ETFs)"])
             etf     = st.selectbox("ETF", ["XLK", "XLF", "XLV", "XLI", "XLE"])
-            period  = st.selectbox("Period", ["2y", "3y", "5y", "1y"])
+            period  = st.selectbox("Period", ["2y", "3y", "5y", "10y", "1y"])
         with col2:
             z_entry      = st.slider("Z-entry threshold", 1.0, 3.0, 1.5, 0.1)
             z_exit       = st.slider("Z-exit threshold",  0.0, 1.0, 0.25, 0.05)
@@ -175,6 +230,13 @@ with tab5:
             monte_carlo  = st.checkbox("Monte Carlo (10k sims)")
 
         submitted = st.form_submit_button("▶ Run Backtest", type="primary")
+
+    if period == "10y":
+        st.caption(
+            "Note: data before Nov 2019 uses the earliest available EDGAR filing "
+            "as a static fallback — true quarterly constituent changes are only "
+            "available from April 2019 onward."
+        )
 
     if submitted:
         st.session_state.custom_figs = []

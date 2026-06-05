@@ -58,5 +58,34 @@ if __name__ == "__main__":
         "--save-figs", str(xlk_dir),
     ])
 
+    # 4. 10y multi-basket portfolio + Monte Carlo
+    portfolio_10y_dir = OUT / "portfolio_10y"
+    portfolio_10y_dir.mkdir(parents=True, exist_ok=True)
+    run("10y Multi-basket portfolio + Monte Carlo", [
+        PYTHON, "run.py", "basket-multi",
+        "--period", "10y", "--monte-carlo",
+        *BASKETS,
+        "--save-figs", str(portfolio_10y_dir),
+    ])
+
+    # 5. 10y Multi-basket walk-forward
+    wf_10y_dir = OUT / "walkforward_10y"
+    wf_10y_dir.mkdir(parents=True, exist_ok=True)
+    run("10y Multi-basket walk-forward", [
+        PYTHON, "run.py", "basket-multi",
+        "--period", "10y", "--walk-forward",
+        *BASKETS,
+        "--save-figs", str(wf_10y_dir),
+    ])
+
+    # 6. 10y XLK single basket
+    xlk_10y_dir = OUT / "xlk_10y"
+    xlk_10y_dir.mkdir(parents=True, exist_ok=True)
+    run("10y XLK single basket", [
+        PYTHON, "run.py", "basket",
+        "--etf", "XLK", "--period", "10y",
+        "--save-figs", str(xlk_10y_dir),
+    ])
+
     print("\nAll figures saved to", OUT)
     print("  Commit the streamlit_app/precomputed/ directory to the repo.")
