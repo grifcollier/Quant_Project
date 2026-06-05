@@ -25,6 +25,7 @@ jobs:
 
       - name: Run daily basket trade
         env:
+          PYTHONPATH:          ${{ github.workspace }}
           ALPACA_API_KEY:      ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY:   ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_PAPER_KEY:    ${{ secrets.ALPACA_PAPER_KEY }}
