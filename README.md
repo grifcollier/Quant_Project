@@ -1,5 +1,9 @@
 # Quantitative Trading Platform
 
+A full-stack algorithmic trading system I built to explore quantitative strategies in practice. Started as a curiosity, turned into something I'm genuinely proud of.
+
+![Combined portfolio equity curve — 5 ETFs, 5y](docs/images/multi_portfolio_equity.png)
+
 A full-stack algorithmic trading system built from scratch in Python, covering signal research, backtesting, walk-forward validation, Monte Carlo analysis, and automated live execution via Alpaca paper trading.
 
 The flagship strategy is **ETF basket arbitrage** — a mean-reversion approach that trades the spread between a sector ETF and a dynamically-updated basket of its top holdings, with historically correct constituent lists sourced directly from SEC EDGAR N-PORT filings to eliminate survivorship bias.
@@ -9,6 +13,7 @@ The flagship strategy is **ETF basket arbitrage** — a mean-reversion approach 
 ## Table of Contents
 
 - [Overview](#overview)
+- [Key Design Decisions](#key-design-decisions)
 - [Basket Strategy (Flagship)](#basket-strategy-flagship)
   - [How It Works](#how-it-works)
   - [Dynamic Constituents (EDGAR N-PORT)](#dynamic-constituents-edgar-n-port)
@@ -34,6 +39,25 @@ The flagship strategy is **ETF basket arbitrage** — a mean-reversion approach 
 | **Execution** | Alpaca paper trading — currently in live testing phase |
 | **Logging** | Automated trade journal to Google Sheets |
 | **Charting** | Interactive Plotly dashboards (equity curves, spread z-scores, entry/exit markers) |
+
+---
+
+## Key Design Decisions
+
+**Why I built this**
+I'm finishing a finance minor and developed a genuine interest in quantitative finance along the way. I decided to build a full trading system from scratch to explore real strategies hands on. This project is the result of that.
+
+**Survivorship bias elimination via SEC EDGAR N-PORT**
+My initial backtest results came back with Sharpe ratios of 6–7+. My first instinct was that something had to be wrong. That sent me down a rabbit hole studying common backtest methodologies, which is how I landed on survivorship bias as the likely cause. The strategy was using today's top ETF holdings, which meant it was assuming I knew years in advance which stocks would become dominant. I didn't. Fetching the complete filing history from SEC EDGAR and reconstructing historically accurate constituent lists at every point in time brought the numbers back to something more realistic.
+
+**Walk-forward validation over a single train/test split**
+A single holdout period tells you how a strategy performed on one piece of history, which could be lucky or unlucky. I wanted something with more rigor, so walk-forward divides the out-of-sample period into non-overlapping folds evaluated independently, then stitches the results into a single track record.
+
+**Monte Carlo simulation for result robustness**
+Even after fixing the survivorship bias, the Sharpe numbers came back high enough that I wanted to keep pressure-testing them. Resampling the daily return stream 10,000 times checks whether the result holds across different orderings of the same trades, or whether I'd just gotten lucky with the sequence.
+
+**Alpaca paper trading**
+After validating the strategy through backtesting and Monte Carlo analysis, I wanted to go a step further and test it in a live market environment. I integrated Alpaca's paper trading API to run the strategy in real time, with a GitHub Actions workflow executing automatically after market close each day. This surfaces the kind of edge cases that backtests never encounter — stale data, corporate actions, API outages — and forces every signal to be generated systematically with no discretionary override.
 
 ---
 
