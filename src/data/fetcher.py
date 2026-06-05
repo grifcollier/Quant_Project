@@ -116,7 +116,7 @@ def fetch_prices_bulk(
         if cache_path.exists():
             df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
             if all(c in df.columns for c in _OHLCV_COLS):
-                s = df["close"]
+                s = df["close"].squeeze()
                 s.name = ticker
                 prices[ticker] = s
                 continue
@@ -136,10 +136,12 @@ def fetch_prices_bulk(
         return prices
 
     # yf.download returns flat columns for a single ticker, MultiIndex for many
+    # Newer yfinance may return a (n,1) DataFrame even for one ticker — squeeze to Series.
     if len(yf_map) == 1:
         ticker = to_download[0]
-        if "Close" in raw.columns:
-            s = raw["Close"].dropna()
+        close_col = raw.get("Close", raw.get("close"))
+        if close_col is not None:
+            s = close_col.squeeze().dropna()
             s.name = ticker
             if len(s) >= 10:
                 prices[ticker] = s

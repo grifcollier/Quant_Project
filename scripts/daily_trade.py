@@ -24,7 +24,7 @@ from src.trading.journal import log_trade
 BASKETS = [
     {"etf": "XLF", "stocks": ["BRK.B", "JPM",  "V",    "MA",   "BAC" ]},
     {"etf": "XLV", "stocks": ["LLY",   "JNJ",  "ABBV", "UNH",  "MRK" ]},
-    {"etf": "XLI", "stocks": ["GE",    "CAT",  "RTX",  "GEV",  "BA"  ]},
+    {"etf": "XLI", "stocks": ["GE",    "CAT",  "RTX",  "HON",  "BA"  ]},
     {"etf": "XLK", "stocks": ["NVDA",  "MSFT", "AAPL", "AVGO", "PLTR"]},
     {"etf": "XLE", "stocks": ["XOM",   "CVX",  "COP",  "WMB",  "SLB" ]},
 ]

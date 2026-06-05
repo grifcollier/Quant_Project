@@ -94,7 +94,7 @@ def plot_basket_prices(
         fig.add_trace(go.Scatter(
             x=exits_sig.index.tolist(), y=y_vals.values,
             mode="markers",
-            marker=dict(color=_AMBER, size=9, symbol="x"),
+            marker=dict(color="black", size=9, symbol="x"),
             name="Exit",
         ))
 
@@ -339,7 +339,7 @@ def plot_basket_spread(
                 fig.add_trace(go.Scatter(
                     x=exits_sig.index.tolist(), y=y_vals.values,
                     mode="markers",
-                    marker=dict(color=_AMBER, size=8, symbol="x"),
+                    marker=dict(color="black", size=8, symbol="x"),
                     name="Exit", showlegend=show,
                 ), row=row_idx, col=1)
 
@@ -834,9 +834,17 @@ def plot_walk_forward_results(
     period_label = params.get("period", "")
     cost_label   = f"z={params.get('z_entry', 1.5)}  cost={params.get('cost_bps', 5)}bps"
 
+    if fold_metrics:
+        fm0 = fold_metrics[0]
+        fold_tdays = (fm0["end"] - fm0["start"]).days * 252 / 365
+        fold_size_label = (f"{round(fold_tdays / 252)}y" if fold_tdays >= 200
+                           else f"{round(fold_tdays)}d")
+    else:
+        fold_size_label = "?"
+
     fig.update_layout(
         title=dict(
-            text=f"Walk-Forward Validation ({n_folds} folds x 1y)  |  {period_label}  |  {cost_label}",
+            text=f"Walk-Forward Validation ({n_folds} folds x {fold_size_label})  |  {period_label}  |  {cost_label}",
             font=dict(size=16, color=_TEXT),
         ),
         height=740,
