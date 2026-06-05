@@ -9,6 +9,17 @@ CACHE_DIR = Path(__file__).parents[2] / "data" / "cache"
 _OHLCV_COLS = ["open", "high", "low", "close", "volume"]
 
 
+def _to_yf(ticker: str) -> str:
+    """
+    Convert a share-class ticker to yfinance format.
+
+    yfinance uses a dash for share classes (BRK-B) whereas SEC/Alpaca and many
+    data sources use a dot (BRK.B). The original ticker is still used as the
+    cache key and Series name; only the download symbol is converted.
+    """
+    return ticker.replace(".", "-")
+
+
 def fetch_ohlcv(
     ticker: str,
     period: str,
@@ -28,7 +39,8 @@ def fetch_ohlcv(
             return df[_OHLCV_COLS]
         # Old single-column cache — fall through to re-fetch
 
-    raw = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
+    raw = yf.download(_to_yf(ticker), period=period, interval=interval,
+                      auto_adjust=True, progress=False)
     if raw.empty:
         raise ValueError(f"No data returned for {ticker}")
 
@@ -113,15 +125,18 @@ def fetch_prices_bulk(
     if not to_download:
         return prices
 
+    # Map yfinance download symbol (BRK-B) back to the original ticker (BRK.B)
+    yf_map = {_to_yf(t): t for t in to_download}
+
     raw = yf.download(
-        to_download, period=period, interval=interval,
+        list(yf_map), period=period, interval=interval,
         auto_adjust=True, progress=False,
     )
     if raw.empty:
         return prices
 
     # yf.download returns flat columns for a single ticker, MultiIndex for many
-    if len(to_download) == 1:
+    if len(yf_map) == 1:
         ticker = to_download[0]
         if "Close" in raw.columns:
             s = raw["Close"].dropna()
@@ -133,10 +148,10 @@ def fetch_prices_bulk(
         if "Close" not in level0:
             return prices
         close_df = raw["Close"]
-        for ticker in to_download:
-            if ticker not in close_df.columns:
+        for yf_sym, ticker in yf_map.items():
+            if yf_sym not in close_df.columns:
                 continue
-            s = close_df[ticker].dropna()
+            s = close_df[yf_sym].dropna()
             if len(s) >= 10:
                 s.name = ticker
                 prices[ticker] = s
