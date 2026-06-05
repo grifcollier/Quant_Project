@@ -663,6 +663,188 @@ def _register_pca(subparsers):
     parser.set_defaults(func=_run_pca)
 
 
+def _run_basket_dynamic(args):
+    """
+    Basket backtest with time-varying constituents from EDGAR N-PORT.
+
+    Resolves the ETF's top-N holdings into stable segments, swapping stocks
+    in/out at each historical change. Each segment is backtested independently
+    (positions forced flat at boundaries) and the equity curves are stitched.
+    For dates before N-PORT coverage (~mid-2019), --stocks is used as fallback.
+    """
+    from src.data.fetcher import fetch_price, fetch_prices_bulk
+    from src.data.edgar import get_constituent_segments
+    from src.analytics.basket import rolling_basket_spread
+    from src.strategies.basket.signals import generate_basket_signals
+    from src.strategies.basket.backtest import run_basket_backtest
+    from src.strategies.basket.viz import plot_basket_spread, plot_basket_trade_pnl
+    from src.strategies.pairs.viz import plot_equity_curve, plot_backtest_metrics
+    from src.backtest.metrics import compute_metrics
+
+    etf           = args.etf.upper()
+    period        = args.period
+    window        = args.window
+    top_n         = getattr(args, "top_n", 5)
+    max_hold_days = getattr(args, "max_hold_days", 0)
+    vix_filter    = getattr(args, "vix_filter", 0.0)
+    vol_target    = getattr(args, "vol_target", 0.0)
+    fallback      = [s.strip().upper() for s in args.stocks] if args.stocks else None
+    capital       = 20_000.0
+
+    print(f"Fetching {etf} price history ({period})...")
+    etf_prices = fetch_price(etf, period=period)
+    start, end = etf_prices.index[0], etf_prices.index[-1]
+
+    print(f"Resolving EDGAR top-{top_n} constituent segments for {etf}...")
+    segments = get_constituent_segments(etf, start, end, top_n=top_n,
+                                        fallback_stocks=fallback)
+    if not segments:
+        print("ERROR: No constituent segments resolved and no --stocks fallback.")
+        sys.exit(1)
+
+    # Normalize share-class tickers for yfinance (BRK/B -> BRK-B)
+    segments = [
+        (s_start, s_end, [s.replace("/", "-") for s in stx])
+        for s_start, s_end, stx in segments
+    ]
+
+    print(f"\n{len(segments)} constituent segment(s):")
+    for s_start, s_end, stx in segments:
+        print(f"  {s_start.date()} -> {s_end.date()}: [{', '.join(stx)}]")
+
+    # Fetch all stocks used across every segment in one bulk call
+    all_stocks = sorted({s for _, _, stx in segments for s in stx})
+    print(f"\nFetching {len(all_stocks)} unique constituent(s)...")
+    prices = fetch_prices_bulk(all_stocks, period=period)
+
+    vix_series = None
+    if vix_filter > 0:
+        try:
+            vix_series = fetch_price("^VIX", period=period)
+            print(f"VIX filter active (threshold: {vix_filter}).")
+        except Exception:
+            print("WARNING: Could not fetch VIX — filter disabled.")
+
+    # Backtest each segment independently, stitch equity and trades
+    running_capital = capital
+    all_trades      = []
+    equity_pieces   = []
+    spread_pieces   = []
+    zscore_pieces   = []
+    signal_pieces   = []
+    boundaries      = []
+
+    for s_start, s_end, stx in segments:
+        avail = [s for s in stx if s in prices]
+        if len(avail) < 2:
+            print(f"  Skipping segment {s_start.date()} — <2 stocks available.")
+            continue
+
+        cdf = pd.DataFrame({s: prices[s] for s in avail}).dropna()
+        ea  = etf_prices.reindex(cdf.index).dropna()
+        cdf = cdf.reindex(ea.index)
+
+        # Full-period rolling spread for proper warmup, then slice to the segment
+        full_spread = rolling_basket_spread(ea, cdf, window=window)
+        sig_full, z_full = generate_basket_signals(
+            full_spread, window=window,
+            z_entry=args.z_entry, z_exit=args.z_exit, z_stop=args.z_stop,
+            vix_series=vix_series, vix_threshold=vix_filter,
+        )
+
+        mask = (full_spread.index >= s_start) & (full_spread.index <= s_end)
+        seg_spread  = full_spread[mask]
+        seg_zscore  = z_full[mask]
+        seg_signals = sig_full[mask]
+
+        if seg_spread.dropna().empty:
+            continue
+
+        t, eq, _ = run_basket_backtest(
+            seg_signals, seg_spread, capital=running_capital,
+            cost_bps=args.cost_bps, n_stocks=len(avail),
+            max_hold_days=max_hold_days, vol_target=vol_target,
+        )
+        if not t.empty:
+            t = t.copy()
+            t["segment"] = f"{s_start.date()}:{','.join(avail)}"
+            all_trades.append(t)
+        equity_pieces.append(eq)
+        spread_pieces.append(seg_spread)
+        zscore_pieces.append(seg_zscore)
+        signal_pieces.append(seg_signals)
+        boundaries.append(s_end)
+        running_capital = float(eq["equity"].iloc[-1])
+
+    if not equity_pieces:
+        print("ERROR: No segments produced a backtest.")
+        sys.exit(1)
+
+    equity_curve = pd.concat(equity_pieces)
+    equity_curve = equity_curve[~equity_curve.index.duplicated(keep="last")]
+    spread       = pd.concat(spread_pieces)
+    spread       = spread[~spread.index.duplicated(keep="last")]
+    zscore       = pd.concat(zscore_pieces)
+    zscore       = zscore[~zscore.index.duplicated(keep="last")]
+    signals      = pd.concat(signal_pieces)
+    signals      = signals[~signals.index.duplicated(keep="last")]
+    trades       = pd.concat(all_trades) if all_trades else pd.DataFrame()
+
+    bt_metrics = compute_metrics(equity_curve, trades, capital)
+
+    print(
+        f"\nDynamic basket: {bt_metrics['n_trades']} trades  |  "
+        f"{bt_metrics['total_return']:.1%} return  |  "
+        f"Sharpe {bt_metrics['sharpe']:.2f}  |  "
+        f"Max DD {bt_metrics['max_drawdown']:.1%}"
+    )
+
+    # Latest segment's stock list drives the price-chart basket label
+    latest_stocks = segments[-1][2]
+    basket_prices = (etf_prices.reindex(spread.index) * np.exp(-spread)).dropna()
+    etf_aligned   = etf_prices.reindex(spread.index)
+
+    params = {
+        "period": period, "window": window,
+        "z_entry": args.z_entry, "z_exit": args.z_exit, "z_stop": args.z_stop,
+    }
+
+    print("Opening windows...")
+    _show(
+        plot_basket_spread(spread, zscore, signals, etf, latest_stocks, params,
+                           etf_prices=etf_aligned, basket_prices=basket_prices),
+        f"Basket (dynamic) — {etf} — Spread",
+    )
+    if not trades.empty:
+        _show(plot_equity_curve(equity_curve, trades, etf, "BASKET", capital),
+              f"Basket (dynamic) — {etf} — Equity")
+        # Per-leg P&L breakdown
+        etf_at_entry = etf_aligned.reindex(trades["entry_date"]).values
+        etf_at_exit  = etf_aligned.reindex(trades["exit_date"]).values
+        bsk_at_entry = basket_prices.reindex(trades["entry_date"]).values
+        bsk_at_exit  = basket_prices.reindex(trades["exit_date"]).values
+        etf_log_ret  = np.log(etf_at_exit / etf_at_entry)
+        bsk_log_ret  = np.log(bsk_at_exit / bsk_at_entry)
+        direction    = trades["direction"].values
+        notional     = trades["notional"].values
+        etf_pct_arr  = direction *  etf_log_ret * notional / capital
+        bsk_pct_arr  = direction * -bsk_log_ret * notional / capital
+        _show(plot_basket_trade_pnl(trades, etf, etf_pct_arr, bsk_pct_arr),
+              f"Basket (dynamic) — {etf} — Trade P&L")
+        _show(plot_backtest_metrics(bt_metrics, trades, etf, "BASKET", params),
+              f"Basket (dynamic) — {etf} — Metrics")
+
+        if getattr(args, "monte_carlo", False):
+            from src.backtest.monte_carlo import bootstrap_returns
+            from src.strategies.basket.viz import plot_monte_carlo
+            n_sims = getattr(args, "mc_sims", 10_000)
+            print(f"Running Monte Carlo bootstrap ({n_sims:,} sims, daily returns)...")
+            mc = bootstrap_returns(equity_curve, capital=capital, n_sims=n_sims)
+            _print_mc_summary(mc)
+            _show(plot_monte_carlo(mc, bt_metrics, etf, params),
+                  f"Basket (dynamic) — {etf} — Monte Carlo")
+
+
 def _run_basket(args):
     from src.data.fetcher import fetch_price
     from src.analytics.stationarity import adf_test, compute_half_life
@@ -673,6 +855,14 @@ def _run_basket(args):
     from src.strategies.pairs.viz import (
         plot_equity_curve, plot_trade_pnl, plot_backtest_metrics,
     )
+
+    if getattr(args, "dynamic_constituents", False):
+        _run_basket_dynamic(args)
+        return
+
+    if not args.stocks:
+        print("ERROR: --stocks is required unless --dynamic-constituents is set.")
+        sys.exit(1)
 
     etf      = args.etf.upper()
     stocks   = [s.strip().upper() for s in args.stocks]
@@ -1445,8 +1635,16 @@ def _register_basket(subparsers):
     parser = subparsers.add_parser("basket", help="Basket / ETF arbitrage")
     parser.add_argument("--etf",     required=True, metavar="TICKER",
                         help="ETF ticker to trade against the basket, e.g. XLF")
-    parser.add_argument("--stocks",  required=True, nargs="+", metavar="TICKER",
-                        help="Constituent tickers, e.g. GS MS JPM BAC C")
+    parser.add_argument("--stocks",  required=False, nargs="+", metavar="TICKER", default=None,
+                        help="Constituent tickers, e.g. GS MS JPM BAC C. "
+                             "Optional when --dynamic-constituents is set.")
+    parser.add_argument("--dynamic-constituents", action="store_true", dest="dynamic_constituents",
+                        help="Pull top-N ETF holdings from EDGAR N-PORT and swap them in/out at "
+                             "each historical change (survivorship-bias corrected). Falls back to "
+                             "--stocks for dates before N-PORT coverage (~mid-2019).")
+    parser.add_argument("--top-n", default=5, type=int, dest="top_n", metavar="N",
+                        help="Number of top ETF holdings to track when --dynamic-constituents "
+                             "is set (default: 5).")
     parser.add_argument("--period",  default="2y",  help="Data lookback (default: 2y)")
     parser.add_argument("--window",  default=60, type=int,
                         help="Rolling OLS and z-score window in days (default: 60)")
