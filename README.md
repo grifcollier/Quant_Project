@@ -89,6 +89,8 @@ This also powers the live daily trade script — at 4:30pm each day, the system 
 
 ### Signal Generation
 
+![XLK spread and z-score chart](docs/images/xlk_spread.png)
+
 The spread is estimated using **rolling OLS** (strictly backward-looking — no lookahead bias):
 
 - At every date `t`, the regression is fit on only the `window` days ending at `t`
@@ -111,6 +113,8 @@ Out-of-sample performance is validated using a **walk-forward framework**: the m
 
 The fold size is automatically computed from the period and number of folds (e.g. `--period 5y --walk-forward 2` gives two 2-year folds). Auto mode selects `period_years - 1` folds by default.
 
+![Multi-basket walk-forward validation — 4 folds × 1y](docs/images/multi_walkforward.png)
+
 ---
 
 ### Monte Carlo Analysis
@@ -119,11 +123,15 @@ After any backtest, `--monte-carlo` runs 10,000 bootstrap simulations by resampl
 
 Output reports the 5th/50th/95th percentile return and maximum drawdown across all simulations, giving a realistic range of outcomes under different sequencing of the same trades.
 
+![Monte Carlo bootstrap — 10,000 simulations, 5-year multi-basket](docs/images/multi_montecarlo.png)
+
 ---
 
 ### Sample Results
 
 All results below are **out-of-sample** walk-forward results using EDGAR dynamic constituents (survivorship-bias corrected):
+
+![Combined portfolio equity curve — 5 ETFs, 5y](docs/images/multi_portfolio_equity.png)
 
 **5-year dynamic walk-forward (4 folds × 1y, all 5 ETFs):**
 
@@ -149,6 +157,8 @@ The tight MC band reflects the high Sharpe and portfolio diversification across 
 
 **Individual ETF results (dynamic, 5y full period):**
 
+![Individual ETF return curves and bar chart](docs/images/multi_individual_etf.png)
+
 | ETF | Sector | Return | Sharpe | Max DD |
 |---|---|---|---|---|
 | XLF | Financials | 42.5% | 2.90 | -1.9% |
@@ -158,6 +168,10 @@ The tight MC band reflects the high Sharpe and portfolio diversification across 
 | XLE | Energy | 32.3% | 2.79 | -1.8% |
 
 Portfolio diversification lifts the combined Sharpe to ~4.6–5.1 — well above any individual leg — because the five sectors are largely uncorrelated.
+
+*Single-basket example — XLK (Technology), 5y:*
+
+![XLK equity curve and drawdown](docs/images/xlk_equity.png)
 
 ---
 
