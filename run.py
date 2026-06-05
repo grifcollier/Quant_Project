@@ -854,11 +854,11 @@ def _run_basket(args):
               f"Basket — {etf} — Metrics")
 
         if getattr(args, "monte_carlo", False):
-            from src.backtest.monte_carlo import bootstrap_trades
+            from src.backtest.monte_carlo import bootstrap_returns
             from src.strategies.basket.viz import plot_monte_carlo
             n_sims = getattr(args, "mc_sims", 5_000)
-            print(f"Running Monte Carlo bootstrap ({n_sims:,} sims, trade-level)...")
-            mc = bootstrap_trades(trades, capital=20_000.0, n_sims=n_sims)
+            print(f"Running Monte Carlo bootstrap ({n_sims:,} sims, daily returns)...")
+            mc = bootstrap_returns(equity_curve, capital=20_000.0, n_sims=n_sims)
             _print_mc_summary(mc)
             _show(plot_monte_carlo(mc, bt_metrics, etf, params),
                   f"Basket — {etf} — Monte Carlo")
