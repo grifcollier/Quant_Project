@@ -16,18 +16,9 @@ from pathlib import Path
 from src.trading.journal import log_trade
 
 # ── Basket configuration ──────────────────────────────────────────────────────
-# Constituents are the ETF's actual top-5 holdings by weight (per EDGAR N-PORT,
-# verified 2026-06). These track each ETF more faithfully than a hand-picked set
-# and raised the backtested Sharpe across all five sectors vs. the prior lists.
-# Note GOOGL/META were removed from XLK — they are communication-services, not
-# technology, and were never actual XLK holdings.
-BASKETS = [
-    {"etf": "XLF", "stocks": ["BRK.B", "JPM",  "V",    "MA",   "BAC" ]},
-    {"etf": "XLV", "stocks": ["LLY",   "JNJ",  "ABBV", "UNH",  "MRK" ]},
-    {"etf": "XLI", "stocks": ["GE",    "CAT",  "RTX",  "HON",  "BA"  ]},
-    {"etf": "XLK", "stocks": ["NVDA",  "MSFT", "AAPL", "AVGO", "PLTR"]},
-    {"etf": "XLE", "stocks": ["XOM",   "CVX",  "COP",  "WMB",  "SLB" ]},
-]
+# Constituents are fetched live from EDGAR N-PORT at run time (top-5 by weight).
+# No hardcoded stock lists — the strategy always uses the current actual holdings.
+ETFS = ["XLF", "XLV", "XLI", "XLK", "XLE"]
 
 Z_ENTRY       = 1.5
 Z_EXIT        = 0.25
@@ -52,13 +43,12 @@ def log(msg: str):
         f.write(line + "\n")
 
 
-def run_basket(etf: str, stocks: list) -> dict:
+def run_basket(etf: str) -> dict:
     """Run trade command for one basket, return parsed result."""
     cmd = [
         sys.executable, str(ROOT / "run.py"),
         "trade", "--strategy", "basket",
         "--etf", etf,
-        "--stocks", *stocks,
         "--z-entry",       str(Z_ENTRY),
         "--z-exit",        str(Z_EXIT),
         "--z-stop",        str(Z_STOP),
@@ -112,16 +102,16 @@ def main():
         sys.exit(1)
 
     results = []
-    for b in BASKETS:
-        log(f"\nRunning {b['etf']} basket...")
-        r = run_basket(b["etf"], b["stocks"])
+    for etf in ETFS:
+        log(f"\nRunning {etf} basket...")
+        r = run_basket(etf)
 
         # Log full output indented
         for line in r["output"].splitlines():
             log(f"  {line}")
 
         if r["error"]:
-            log(f"  !! ERROR running {b['etf']} basket")
+            log(f"  !! ERROR running {etf} basket")
 
         try:
             log_trade(r, mode)

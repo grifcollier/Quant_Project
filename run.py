@@ -2426,7 +2426,25 @@ def _run_trade_basket(args, acct, capital, execute=False):
     from alpaca.trading.enums import OrderSide
 
     etf           = args.etf.upper()
-    stocks        = [s.strip().upper() for s in args.stocks]
+    top_n         = getattr(args, "top_n", 5)
+    static_mode   = getattr(args, "static_constituents", False)
+
+    if static_mode:
+        stocks = [s.strip().upper() for s in (args.stocks or [])]
+        if not stocks:
+            print(f"ERROR: --static requires --stocks.")
+            return
+    else:
+        from src.data.edgar import build_constituent_history, get_constituents_at
+        today = pd.Timestamp.today().normalize()
+        lookback = (today - pd.DateOffset(months=4)).strftime("%Y-%m-%d")
+        history = build_constituent_history(etf, lookback, today.strftime("%Y-%m-%d"), top_n=top_n)
+        stocks = get_constituents_at(history, today)
+        if not stocks:
+            print(f"ERROR: EDGAR returned no constituents for {etf}. Pass --static --stocks to override.")
+            return
+        print(f"EDGAR top-{top_n} for {etf} (today): {', '.join(stocks)}")
+
     window        = getattr(args, "window",        60)
     z_entry       = getattr(args, "z_entry",       1.5)
     z_exit        = getattr(args, "z_exit",        0.25)
@@ -2759,7 +2777,11 @@ def _register_trade(subparsers):
     parser.add_argument("--etf", default=None, metavar="TICKER",
                         help="ETF ticker for basket strategy, e.g. XLF")
     parser.add_argument("--stocks", default=None, nargs="+", metavar="TICKER",
-                        help="Constituent tickers for basket strategy, e.g. GS MS JPM BAC C")
+                        help="Constituent tickers (static mode). Omit to use EDGAR N-PORT top-N.")
+    parser.add_argument("--static", action="store_true", dest="static_constituents",
+                        help="Use fixed --stocks instead of live EDGAR N-PORT lookup.")
+    parser.add_argument("--top-n", default=5, type=int, dest="top_n", metavar="N",
+                        help="Number of top holdings to fetch from EDGAR N-PORT (default: 5).")
     parser.add_argument("--window", default=60, type=int, metavar="N",
                         help="OLS rolling window in days (default: 60)")
     parser.add_argument("--z-entry", default=1.5, type=float, dest="z_entry",
