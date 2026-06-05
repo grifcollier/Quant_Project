@@ -16,12 +16,17 @@ from pathlib import Path
 from src.trading.journal import log_trade
 
 # ── Basket configuration ──────────────────────────────────────────────────────
+# Constituents are the ETF's actual top-5 holdings by weight (per EDGAR N-PORT,
+# verified 2026-06). These track each ETF more faithfully than a hand-picked set
+# and raised the backtested Sharpe across all five sectors vs. the prior lists.
+# Note GOOGL/META were removed from XLK — they are communication-services, not
+# technology, and were never actual XLK holdings.
 BASKETS = [
-    {"etf": "XLF", "stocks": ["GS",   "MS",   "JPM",   "BAC",  "C"  ]},
-    {"etf": "XLV", "stocks": ["UNH",  "LLY",  "ABBV",  "JNJ",  "MRK"]},
-    {"etf": "XLI", "stocks": ["GE",   "RTX",  "CAT",   "HON",  "UPS"]},
-    {"etf": "XLK", "stocks": ["MSFT", "AAPL", "NVDA",  "GOOGL","META"]},
-    {"etf": "XLE", "stocks": ["XOM",  "CVX",  "COP",   "SLB",  "EOG"]},
+    {"etf": "XLF", "stocks": ["BRK.B", "JPM",  "V",    "MA",   "BAC" ]},
+    {"etf": "XLV", "stocks": ["LLY",   "JNJ",  "ABBV", "UNH",  "MRK" ]},
+    {"etf": "XLI", "stocks": ["GE",    "CAT",  "RTX",  "GEV",  "BA"  ]},
+    {"etf": "XLK", "stocks": ["NVDA",  "MSFT", "AAPL", "AVGO", "PLTR"]},
+    {"etf": "XLE", "stocks": ["XOM",   "CVX",  "COP",  "WMB",  "SLB" ]},
 ]
 
 Z_ENTRY       = 1.5

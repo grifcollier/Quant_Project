@@ -292,6 +292,14 @@ _OPENFIGI_SLEEP = 2.0   # seconds between batches
 
 _cusip_map: dict[str, str] = {}     # in-memory layer; populated on first use
 
+# Valid US equity ticker: 1-5 letters, optional share-class suffix (BRK/B, BRK.B).
+# Rejects currency/exchange artifacts like "PXDEUR" or "VODLN".
+_US_TICKER_RE = re.compile(r"^[A-Z]{1,5}([./][A-Z])?$")
+
+
+def _is_valid_us_ticker(ticker: str) -> bool:
+    return bool(_US_TICKER_RE.match(ticker.upper()))
+
 
 def _load_cusip_cache() -> None:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -348,11 +356,14 @@ def resolve_cusips(cusips: list[str]) -> dict[str, str]:
             figi_list = result.get("data") or []
             ticker = ""
 
-            # Priority: US-exchange common stock > any common stock > first result
+            # US-exchange listings only. We never fall back to foreign listings:
+            # a CUSIP that has no US listing (e.g. a name acquired/delisted) would
+            # otherwise resolve to an artifact like "PXDEUR" (a EUR-denominated
+            # listing) that is untradeable and not in yfinance. Leaving it
+            # unresolved correctly drops the holding from the basket.
             for priority in (
                 lambda i: i.get("exchCode") == "US" and "Common" in i.get("securityType", ""),
-                lambda i: "Common" in i.get("securityType", "") and i.get("marketSector") == "Equity",
-                lambda i: i.get("marketSector") == "Equity",
+                lambda i: i.get("exchCode") == "US" and i.get("marketSector") == "Equity",
             ):
                 for item in figi_list:
                     if priority(item) and item.get("ticker"):
@@ -360,6 +371,12 @@ def resolve_cusips(cusips: list[str]) -> dict[str, str]:
                         break
                 if ticker:
                     break
+
+            # Guard against any remaining currency/exchange-suffixed artifacts:
+            # valid US equity tickers are <=5 alphabetic chars (optionally with a
+            # share-class suffix like BRK/B). Reject anything else.
+            if ticker and not _is_valid_us_ticker(ticker):
+                ticker = ""
 
             # Only store successful resolutions — never cache empty strings so
             # temporarily-unresolvable CUSIPs (data gaps, new listings) get
@@ -475,6 +492,10 @@ def build_constituent_history(
     for i, row in filings.iterrows():
         print(f"  [{i+1:2d}/{n}] {ticker} {row['filing_date'].date()} ...", end="\r")
         holdings = _fetch_holdings_cached(cik, row["accession"], row["primary_doc"])
+
+        # Drop currency/exchange artifacts (e.g. "PXDEUR") that may exist in
+        # older holdings caches built before the US-only resolution fix.
+        holdings = [h for h in holdings if _is_valid_us_ticker(h["ticker"])]
 
         if min_pct > 0:
             holdings = [h for h in holdings if h["pct_val"] >= min_pct]
