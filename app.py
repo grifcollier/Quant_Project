@@ -220,49 +220,74 @@ with tab5:
     if "custom_figs" not in st.session_state:
         st.session_state.custom_figs = []
 
-    with st.form("run_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            mode    = st.selectbox("Mode", ["Single ETF", "Multi-basket (all 5 ETFs)"])
-            etf     = st.selectbox("ETF", ["XLK", "XLF", "XLV", "XLI", "XLE"])
-            period  = st.selectbox("Period", ["2y", "3y", "5y", "10y", "1y"])
-        with col2:
-            z_entry      = st.slider("Z-entry threshold", 1.0, 3.0, 1.5, 0.1)
-            z_exit       = st.slider("Z-exit threshold",  0.0, 1.0, 0.25, 0.05)
-            walk_forward = st.checkbox("Walk-forward validation")
-            monte_carlo  = st.checkbox("Monte Carlo (10k sims)")
+    # Sync ETF→mode and mode→ETF reactively (no form needed)
+    if "_cr_mode" not in st.session_state:
+        st.session_state["_cr_mode"] = "Single ETF"
+    if "_cr_etf" not in st.session_state:
+        st.session_state["_cr_etf"] = "XLK"
 
-        submitted = st.form_submit_button("▶ Run Backtest", type="primary")
+    def _on_cr_mode_change():
+        if st.session_state["_cr_mode"] == "Multi-basket (all 5 ETFs)":
+            st.session_state["_cr_etf"] = "-"
 
-    if period == "10y":
-        st.caption(
-            "Note: data before Nov 2019 uses the earliest available EDGAR filing "
-            "as a static fallback — true quarterly constituent changes are only "
-            "available from April 2019 onward."
+    def _on_cr_etf_change():
+        if st.session_state["_cr_etf"] != "-":
+            st.session_state["_cr_mode"] = "Single ETF"
+
+    col1, col2 = st.columns(2)
+    with col1:
+        mode = st.selectbox(
+            "Mode",
+            ["Single ETF", "Multi-basket (all 5 ETFs)"],
+            key="_cr_mode",
+            on_change=_on_cr_mode_change,
         )
+        etf = st.selectbox(
+            "ETF",
+            ["-", "XLK", "XLF", "XLV", "XLI", "XLE"],
+            key="_cr_etf",
+            on_change=_on_cr_etf_change,
+        )
+        period = st.selectbox("Period", ["2y", "3y", "5y", "10y", "1y"])
+        if period == "10y":
+            st.caption(
+                "Note: data before Nov 2019 uses the earliest available EDGAR filing "
+                "as a static fallback."
+            )
+    with col2:
+        z_entry     = st.slider("Z-entry threshold", 1.0, 3.0, 1.5, 0.1)
+        z_exit      = st.slider("Z-exit threshold",  0.0, 1.0, 0.25, 0.05)
+        monte_carlo = st.checkbox("Monte Carlo (10k sims)")
 
-    if submitted:
+    is_multi = (mode == "Multi-basket (all 5 ETFs)")
+
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        run_bt = st.button("▶ Run Backtest", type="primary", use_container_width=True)
+    with btn_col2:
+        run_wf = st.button("▶ Run Walk-Forward Validation", type="primary", use_container_width=True)
+
+    if (run_bt or run_wf) and not is_multi and etf == "-":
+        st.warning("Please select an ETF for Single ETF mode.")
+    elif run_bt or run_wf:
         st.session_state.custom_figs = []
         log_area = st.empty()
 
-        if mode == "Single ETF":
+        if not is_multi:
             cmd = [sys.executable, str(ROOT / "run.py"), "basket",
                    "--etf", etf, "--period", period,
                    "--z-entry", str(z_entry), "--z-exit", str(z_exit)]
-            if walk_forward:
-                cmd += ["--walk-forward", "-1"]
-            if monte_carlo:
-                cmd += ["--monte-carlo"]
         else:
             cmd = [sys.executable, str(ROOT / "run.py"), "basket-multi",
                    "--period", period,
                    "--z-entry", str(z_entry), "--z-exit", str(z_exit),
                    "--basket", "XLF:", "--basket", "XLV:", "--basket", "XLI:",
                    "--basket", "XLK:", "--basket", "XLE:"]
-            if walk_forward:
-                cmd += ["--walk-forward"]
-            elif monte_carlo:
-                cmd += ["--monte-carlo"]
+
+        if run_wf:
+            cmd += ["--walk-forward"]
+        elif monte_carlo:
+            cmd += ["--monte-carlo"]
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cmd += ["--save-figs", tmpdir]
