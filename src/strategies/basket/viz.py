@@ -534,3 +534,185 @@ def plot_walk_forward_results(
     fig.update_yaxes(title_text="Sharpe Ratio",        gridcolor=_GRID, row=3, col=1)
     fig.update_xaxes(showgrid=True, gridcolor=_GRID)
     return fig
+
+
+def plot_monte_carlo(
+    mc: dict,
+    actual_metrics: dict,
+    label: str,
+    params: dict,
+) -> go.Figure:
+    """
+    3-panel Monte Carlo bootstrap chart.
+
+    Top-left  : Equity path fan (5/25/50/75/95th percentile bands + actual).
+    Bottom-left: Sharpe and max-drawdown distribution histograms side by side.
+    Right col  : Summary table (worst / median / best vs. actual).
+    """
+    import math
+    import numpy as np
+    from src.viz.theme import _HEADER_BG, _ROW_A, _ROW_B, _GOOD_BG, _WARN_BG, _BAD_BG
+
+    paths     = mc["equity_paths"]        # shape (n_store, path_length)
+    sharpes   = mc["sharpes"]
+    drawdowns = mc["drawdowns"]
+    returns   = mc["returns"]
+    capital   = mc["capital"]
+    n_sims    = mc["n_sims"]
+    n_pts     = paths.shape[1]
+    x_axis    = list(range(n_pts))
+
+    pcts = [5, 25, 50, 75, 95]
+    bands = {p: np.percentile(paths, p, axis=0) for p in pcts}
+
+    fig = make_subplots(
+        rows=2, cols=3,
+        row_heights=[0.55, 0.45],
+        column_widths=[0.38, 0.28, 0.34],
+        specs=[
+            [{"colspan": 2}, None, {"rowspan": 2, "type": "table"}],
+            [{"colspan": 1}, {"colspan": 1}, None],
+        ],
+        subplot_titles=[
+            f"Equity Path Fan  ({n_sims:,} simulations)", "",
+            "Return Distribution", "Max Drawdown Distribution",
+        ],
+        vertical_spacing=0.12,
+        horizontal_spacing=0.06,
+    )
+
+    # ── Equity fan ────────────────────────────────────────────────────────────
+    fill_pairs = [(5, 25, "rgba(31,119,180,0.10)"),
+                  (25, 75, "rgba(31,119,180,0.18)"),
+                  (75, 95, "rgba(31,119,180,0.10)")]
+    for lo, hi, color in fill_pairs:
+        fig.add_trace(go.Scatter(
+            x=x_axis + x_axis[::-1],
+            y=list(bands[hi]) + list(bands[lo])[::-1],
+            fill="toself", fillcolor=color,
+            line=dict(width=0), showlegend=False, hoverinfo="skip",
+        ), row=1, col=1)
+
+    for p, dash, width in [(5, "dot", 1), (50, "solid", 1.5), (95, "dot", 1)]:
+        fig.add_trace(go.Scatter(
+            x=x_axis, y=bands[p],
+            mode="lines", line=dict(color=_BLUE, width=width, dash=dash),
+            name=f"p{p}", showlegend=(p == 50),
+        ), row=1, col=1)
+
+    # Actual equity reconstructed from capital + cumulative P&L
+    # (we only have bootstrapped paths here; mark actual starting/ending points)
+    actual_return = actual_metrics.get("total_return", 0.0)
+    actual_end    = capital * (1 + actual_return)
+    fig.add_trace(go.Scatter(
+        x=[0, n_pts - 1], y=[capital, actual_end],
+        mode="lines+markers",
+        line=dict(color=_ORANGE, width=2.5),
+        marker=dict(size=7, color=_ORANGE),
+        name="Actual",
+    ), row=1, col=1)
+    fig.add_hline(y=capital, line_dash="dash", line_color=_SUBTEXT,
+                  line_width=1, row=1, col=1)
+
+    # ── Return histogram ──────────────────────────────────────────────────────
+    actual_return_val = actual_metrics.get("total_return", 0.0)
+    fig.add_trace(go.Histogram(
+        x=returns * 100, nbinsx=60,
+        marker_color=_BLUE, opacity=0.7,
+        name="Return", showlegend=False,
+    ), row=2, col=1)
+    fig.add_vline(x=actual_return_val * 100, line_color=_ORANGE, line_width=2,
+                  annotation_text=f"Actual {actual_return_val:.1%}",
+                  annotation_position="top right",
+                  annotation_font=dict(color=_ORANGE, size=10),
+                  row=2, col=1)
+
+    # ── Max DD histogram ──────────────────────────────────────────────────────
+    actual_dd = actual_metrics.get("max_drawdown", 0.0)
+    fig.add_trace(go.Histogram(
+        x=drawdowns * 100, nbinsx=60,
+        marker_color=_RED, opacity=0.7,
+        name="Max DD", showlegend=False,
+    ), row=2, col=2)
+    fig.add_vline(x=actual_dd * 100, line_color=_ORANGE, line_width=2,
+                  annotation_text=f"Actual {actual_dd:.1%}",
+                  annotation_position="top left",
+                  annotation_font=dict(color=_ORANGE, size=10),
+                  row=2, col=2)
+
+    # ── Summary table ─────────────────────────────────────────────────────────
+    def _pct(arr, p):
+        return float(np.percentile(arr, p))
+
+    def _fmt(v, pct=False):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return "n/a"
+        return f"{v:.1%}" if pct else f"{v:.2f}"
+
+    def _hl(v, hi, lo=None, invert=False):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return _ROW_A
+        good = (v > hi) if not invert else (v < hi)
+        warn = (v > lo) if lo is not None and not invert else (v < lo if lo else False)
+        return _GOOD_BG if good else (_WARN_BG if warn else _BAD_BG)
+
+    rows = [
+        ("Return",
+         _fmt(_pct(returns, 5),   pct=True), _fmt(_pct(returns, 50),   pct=True),
+         _fmt(_pct(returns, 95),  pct=True), _fmt(actual_return, pct=True)),
+        ("Max DD",
+         _fmt(_pct(drawdowns, 5), pct=True), _fmt(_pct(drawdowns, 50), pct=True),
+         _fmt(_pct(drawdowns, 95),pct=True), _fmt(actual_dd, pct=True)),
+        ("", "", "", "", ""),
+        ("Simulations", str(n_sims), "", "", ""),
+        ("Period",   params.get("period", ""),    "", "", ""),
+        ("z-entry",  str(params.get("z_entry", "")), "", "", ""),
+    ]
+
+    row_bgs = [
+        _hl(actual_return, 0.05, 0),
+        _hl(actual_dd, -0.10, -0.25, invert=True),
+        _ROW_A, _ROW_A, _ROW_B, _ROW_A,
+    ]
+
+    fig.add_trace(go.Table(
+        header=dict(
+            values=["Metric", "5th pct", "Median", "95th pct", "Actual"],
+            fill_color=_HEADER_BG,
+            font=dict(color="white", size=10, family="Inter, sans-serif"),
+            align="left", height=26,
+        ),
+        cells=dict(
+            values=[
+                [r[0] for r in rows],
+                [r[1] for r in rows],
+                [r[2] for r in rows],
+                [r[3] for r in rows],
+                [r[4] for r in rows],
+            ],
+            fill_color=[row_bgs] * 5,
+            font=dict(color=_TEXT, size=10, family="Inter, sans-serif"),
+            align="left", height=24,
+        ),
+    ), row=1, col=3)
+
+    period_label = params.get("period", "")
+    fig.update_layout(
+        title=dict(
+            text=f"Monte Carlo Bootstrap — {label}  |  {period_label}  |  {n_sims:,} simulations",
+            font=dict(size=15, color=_TEXT),
+        ),
+        height=640,
+        template="plotly_white",
+        hovermode="x unified",
+        showlegend=True,
+        legend=dict(x=0.01, y=0.97, font=dict(size=9)),
+        margin=dict(l=60, r=30, t=70, b=40),
+    )
+    fig.update_yaxes(title_text="Portfolio Value ($)", gridcolor=_GRID, row=1, col=1)
+    fig.update_yaxes(title_text="Count", gridcolor=_GRID, row=2, col=1)
+    fig.update_yaxes(title_text="Count", gridcolor=_GRID, row=2, col=2)
+    fig.update_xaxes(title_text="Trade #",    gridcolor=_GRID, showgrid=True, row=1, col=1)
+    fig.update_xaxes(title_text="Return (%)", gridcolor=_GRID, showgrid=True, row=2, col=1)
+    fig.update_xaxes(title_text="Max DD (%)", gridcolor=_GRID, showgrid=True, row=2, col=2)
+    return fig

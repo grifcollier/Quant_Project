@@ -33,6 +33,17 @@ def _show(fig, title: str, static: bool = False) -> None:
     webbrowser.open(f"file:///{path}")
 
 
+def _print_mc_summary(mc: dict) -> None:
+    import numpy as np
+    rows = [
+        ("Return", "returns",   ".1%"),
+        ("Max DD", "drawdowns", ".1%"),
+    ]
+    for label, key, fmt in rows:
+        p5, p50, p95 = np.percentile(mc[key], [5, 50, 95])
+        print(f"  {label:8s}  5th/50th/95th: {p5:{fmt}} / {p50:{fmt}} / {p95:{fmt}}")
+
+
 def _run_pairs(args):
     if args.scan:
         _pairs_scan(args)
@@ -842,6 +853,16 @@ def _run_basket(args):
         _show(plot_backtest_metrics(bt_metrics, trades, etf, "BASKET", params),
               f"Basket — {etf} — Metrics")
 
+        if getattr(args, "monte_carlo", False):
+            from src.backtest.monte_carlo import bootstrap_trades
+            from src.strategies.basket.viz import plot_monte_carlo
+            n_sims = getattr(args, "mc_sims", 5_000)
+            print(f"Running Monte Carlo bootstrap ({n_sims:,} sims, trade-level)...")
+            mc = bootstrap_trades(trades, capital=20_000.0, n_sims=n_sims)
+            _print_mc_summary(mc)
+            _show(plot_monte_carlo(mc, bt_metrics, etf, params),
+                  f"Basket — {etf} — Monte Carlo")
+
 
 def _run_basket_multi(args):
     import math as _math
@@ -1292,6 +1313,16 @@ def _run_basket_multi(args):
         "Basket Portfolio -- Individual ETFs",
     )
 
+    if getattr(args, "monte_carlo", False):
+        from src.backtest.monte_carlo import bootstrap_returns
+        from src.strategies.basket.viz import plot_monte_carlo
+        n_sims = getattr(args, "mc_sims", 5_000)
+        print(f"Running Monte Carlo bootstrap ({n_sims:,} sims, daily-returns)...")
+        mc = bootstrap_returns(combined_equity, capital=total_capital, n_sims=n_sims)
+        _print_mc_summary(mc)
+        _show(plot_monte_carlo(mc, combined_metrics, "Portfolio", params),
+              "Basket Portfolio -- Monte Carlo")
+
 
 def _register_basket_multi(subparsers):
     parser = subparsers.add_parser(
@@ -1338,6 +1369,10 @@ def _register_basket_multi(subparsers):
                         help="Suppress new entries when VIX > LEVEL (0 = off, e.g. 25).")
     parser.add_argument("--vol-target", default=0.0, type=float, metavar="F", dest="vol_target",
                         help="Annualised spread vol target as fraction of capital (0 = off, e.g. 0.10).")
+    parser.add_argument("--monte-carlo", action="store_true", dest="monte_carlo",
+                        help="Run Monte Carlo bootstrap on combined portfolio after backtest.")
+    parser.add_argument("--mc-sims", default=5_000, type=int, dest="mc_sims",
+                        help="Number of Monte Carlo simulations (default: 5000).")
     parser.set_defaults(func=_run_basket_multi)
 
 
@@ -1372,6 +1407,10 @@ def _register_basket(subparsers):
                         help="Suppress new entries when VIX > LEVEL (0 = off, e.g. 25).")
     parser.add_argument("--vol-target", default=0.0, type=float, metavar="F", dest="vol_target",
                         help="Annualised spread vol target as fraction of capital (0 = off, e.g. 0.10).")
+    parser.add_argument("--monte-carlo", action="store_true", dest="monte_carlo",
+                        help="Run Monte Carlo bootstrap on trade P&L after backtest.")
+    parser.add_argument("--mc-sims", default=5_000, type=int, dest="mc_sims",
+                        help="Number of Monte Carlo simulations (default: 5000).")
     parser.set_defaults(func=_run_basket)
 
 
