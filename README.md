@@ -352,3 +352,7 @@ No API keys are needed for backtesting — historical data is fetched from yfina
 ---
 
 *Built with Python · pandas · statsmodels · Plotly · Alpaca · SEC EDGAR*
+
+---
+
+*Strategy design, research methodology, and validation framework developed independently. Claude Code used as an implementation assistant throughout.*
