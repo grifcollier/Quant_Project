@@ -23,6 +23,7 @@ The flagship strategy is **ETF basket arbitrage** — a mean-reversion approach 
   - [Sample Results](#sample-results)
 - [Other Strategies](#other-strategies)
 - [Live Trading (Alpaca Paper)](#live-trading-alpaca-paper)
+- [Streamlit App](#streamlit-app)
 - [Architecture](#architecture)
 - [CLI Reference](#cli-reference)
 - [Setup](#setup)
@@ -233,6 +234,20 @@ on:
 ```
 
 The GitHub Action mirrors the production environment exactly, with Alpaca API keys injected via repository secrets. Paper trading results are accumulated to validate live signal quality before any transition to real capital.
+
+---
+
+## Streamlit App
+
+**[grifcollier-quant-project.streamlit.app](https://grifcollier-quant-project.streamlit.app)**
+
+An interactive web app built with Streamlit and deployed to Streamlit Community Cloud. It serves as a live demo of the platform without needing to clone the repo or run anything locally.
+
+The app has two modes:
+
+**Pre-computed tabs** — five tabs that load instantly from Plotly JSON figures committed to the repo, generated once with `python scripts/precompute_streamlit.py`. Covers the multi-basket portfolio, walk-forward validation, Monte Carlo analysis, and a single-basket XLK drill-down. A 5y / 10y toggle switches between pre-computed result sets.
+
+**Custom Run tab** — runs a live backtest against real data on the fly. Supports both single-ETF and multi-basket modes, adjustable z-score thresholds, and separate "Run Backtest" and "Run Walk-Forward Validation" buttons. Data is fetched from yfinance and EDGAR on first run (1–2 min), then cached.
 
 ---
 
