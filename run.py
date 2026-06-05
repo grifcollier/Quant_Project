@@ -5,6 +5,7 @@ import sys
 import tempfile
 import webbrowser
 
+import numpy as np
 import pandas as pd
 
 from src.data.fetcher import fetch_pair, fetch_price
@@ -662,6 +663,189 @@ def _register_pca(subparsers):
     parser.set_defaults(func=_run_pca)
 
 
+def _run_basket_dynamic(args):
+    """
+    Basket backtest with time-varying constituents from EDGAR N-PORT.
+
+    Resolves the ETF's top-N holdings into stable segments, swapping stocks
+    in/out at each historical change. Each segment is backtested independently
+    (positions forced flat at boundaries) and the equity curves are stitched.
+    For dates before N-PORT coverage (~mid-2019), --stocks is used as fallback.
+    """
+    from src.data.fetcher import fetch_price, fetch_prices_bulk
+    from src.data.edgar import get_constituent_segments
+    from src.analytics.basket import rolling_basket_spread
+    from src.strategies.basket.signals import generate_basket_signals
+    from src.strategies.basket.backtest import run_basket_backtest
+    from src.strategies.basket.viz import plot_basket_spread, plot_basket_trade_pnl
+    from src.strategies.pairs.viz import plot_equity_curve, plot_backtest_metrics
+    from src.backtest.metrics import compute_metrics
+
+    etf           = args.etf.upper()
+    period        = args.period
+    window        = args.window
+    top_n         = getattr(args, "top_n", 5)
+    max_hold_days = getattr(args, "max_hold_days", 0)
+    vix_filter    = getattr(args, "vix_filter", 0.0)
+    vol_target    = getattr(args, "vol_target", 0.0)
+    fallback      = [s.strip().upper() for s in args.stocks] if args.stocks else None
+    capital       = 20_000.0
+
+    print(f"Fetching {etf} price history ({period})...")
+    etf_prices = fetch_price(etf, period=period)
+    start, end = etf_prices.index[0], etf_prices.index[-1]
+
+    print(f"Resolving EDGAR top-{top_n} constituent segments for {etf}...")
+    segments = get_constituent_segments(etf, start, end, top_n=top_n,
+                                        fallback_stocks=fallback)
+    if not segments:
+        print("ERROR: No constituent segments resolved and no --stocks fallback.")
+        sys.exit(1)
+
+    # Normalize share-class tickers for yfinance (BRK/B -> BRK-B)
+    segments = [
+        (s_start, s_end, [s.replace("/", "-") for s in stx])
+        for s_start, s_end, stx in segments
+    ]
+
+    print(f"\n{len(segments)} constituent segment(s):")
+    for s_start, s_end, stx in segments:
+        print(f"  {s_start.date()} -> {s_end.date()}: [{', '.join(stx)}]")
+
+    # Fetch all stocks used across every segment in one bulk call
+    all_stocks = sorted({s for _, _, stx in segments for s in stx})
+    print(f"\nFetching {len(all_stocks)} unique constituent(s)...")
+    prices = fetch_prices_bulk(all_stocks, period=period)
+
+    vix_series = None
+    if vix_filter > 0:
+        try:
+            vix_series = fetch_price("^VIX", period=period)
+            print(f"VIX filter active (threshold: {vix_filter}).")
+        except Exception:
+            print("WARNING: Could not fetch VIX — filter disabled.")
+
+    # Backtest each segment independently, stitch equity and trades
+    running_capital = capital
+    all_trades      = []
+    equity_pieces   = []
+    spread_pieces   = []
+    zscore_pieces   = []
+    signal_pieces   = []
+    boundaries      = []
+
+    for s_start, s_end, stx in segments:
+        avail = [s for s in stx if s in prices]
+        if len(avail) < 2:
+            print(f"  Skipping segment {s_start.date()} — <2 stocks available.")
+            continue
+
+        cdf = pd.DataFrame({s: prices[s] for s in avail}).dropna()
+        ea  = etf_prices.reindex(cdf.index).dropna()
+        cdf = cdf.reindex(ea.index)
+
+        # Full-period rolling spread for proper warmup, then slice to the segment
+        full_spread = rolling_basket_spread(ea, cdf, window=window)
+        sig_full, z_full = generate_basket_signals(
+            full_spread, window=window,
+            z_entry=args.z_entry, z_exit=args.z_exit, z_stop=args.z_stop,
+            vix_series=vix_series, vix_threshold=vix_filter,
+        )
+
+        mask = (full_spread.index >= s_start) & (full_spread.index <= s_end)
+        seg_spread  = full_spread[mask]
+        seg_zscore  = z_full[mask]
+        seg_signals = sig_full[mask]
+
+        if seg_spread.dropna().empty:
+            continue
+
+        t, eq, _ = run_basket_backtest(
+            seg_signals, seg_spread, capital=running_capital,
+            cost_bps=args.cost_bps, n_stocks=len(avail),
+            max_hold_days=max_hold_days, vol_target=vol_target,
+        )
+        if not t.empty:
+            t = t.copy()
+            t["segment"] = f"{s_start.date()}:{','.join(avail)}"
+            all_trades.append(t)
+        equity_pieces.append(eq)
+        spread_pieces.append(seg_spread)
+        zscore_pieces.append(seg_zscore)
+        signal_pieces.append(seg_signals)
+        boundaries.append(s_end)
+        if not eq.empty:
+            running_capital = float(eq["equity"].iloc[-1])
+
+    if not equity_pieces:
+        print("ERROR: No segments produced a backtest.")
+        sys.exit(1)
+
+    equity_curve = pd.concat(equity_pieces)
+    equity_curve = equity_curve[~equity_curve.index.duplicated(keep="last")]
+    spread       = pd.concat(spread_pieces)
+    spread       = spread[~spread.index.duplicated(keep="last")]
+    zscore       = pd.concat(zscore_pieces)
+    zscore       = zscore[~zscore.index.duplicated(keep="last")]
+    signals      = pd.concat(signal_pieces)
+    signals      = signals[~signals.index.duplicated(keep="last")]
+    trades       = pd.concat(all_trades) if all_trades else pd.DataFrame()
+
+    bt_metrics = compute_metrics(equity_curve, trades, capital)
+
+    print(
+        f"\nDynamic basket: {bt_metrics['n_trades']} trades  |  "
+        f"{bt_metrics['total_return']:.1%} return  |  "
+        f"Sharpe {bt_metrics['sharpe']:.2f}  |  "
+        f"Max DD {bt_metrics['max_drawdown']:.1%}"
+    )
+
+    # Latest segment's stock list drives the price-chart basket label
+    latest_stocks = segments[-1][2]
+    basket_prices = (etf_prices.reindex(spread.index) * np.exp(-spread)).dropna()
+    etf_aligned   = etf_prices.reindex(spread.index)
+
+    params = {
+        "period": period, "window": window,
+        "z_entry": args.z_entry, "z_exit": args.z_exit, "z_stop": args.z_stop,
+    }
+
+    print("Opening windows...")
+    _show(
+        plot_basket_spread(spread, zscore, signals, etf, latest_stocks, params,
+                           etf_prices=etf_aligned, basket_prices=basket_prices),
+        f"Basket (dynamic) — {etf} — Spread",
+    )
+    if not trades.empty:
+        _show(plot_equity_curve(equity_curve, trades, etf, "BASKET", capital),
+              f"Basket (dynamic) — {etf} — Equity")
+        # Per-leg P&L breakdown
+        etf_at_entry = etf_aligned.reindex(trades["entry_date"]).values
+        etf_at_exit  = etf_aligned.reindex(trades["exit_date"]).values
+        bsk_at_entry = basket_prices.reindex(trades["entry_date"]).values
+        bsk_at_exit  = basket_prices.reindex(trades["exit_date"]).values
+        etf_log_ret  = np.log(etf_at_exit / etf_at_entry)
+        bsk_log_ret  = np.log(bsk_at_exit / bsk_at_entry)
+        direction    = trades["direction"].values
+        notional     = trades["notional"].values
+        etf_pct_arr  = direction *  etf_log_ret * notional / capital
+        bsk_pct_arr  = direction * -bsk_log_ret * notional / capital
+        _show(plot_basket_trade_pnl(trades, etf, etf_pct_arr, bsk_pct_arr),
+              f"Basket (dynamic) — {etf} — Trade P&L")
+        _show(plot_backtest_metrics(bt_metrics, trades, etf, "BASKET", params),
+              f"Basket (dynamic) — {etf} — Metrics")
+
+        if getattr(args, "monte_carlo", False):
+            from src.backtest.monte_carlo import bootstrap_returns
+            from src.strategies.basket.viz import plot_monte_carlo
+            n_sims = getattr(args, "mc_sims", 10_000)
+            print(f"Running Monte Carlo bootstrap ({n_sims:,} sims, daily returns)...")
+            mc = bootstrap_returns(equity_curve, capital=capital, n_sims=n_sims)
+            _print_mc_summary(mc)
+            _show(plot_monte_carlo(mc, bt_metrics, etf, params),
+                  f"Basket (dynamic) — {etf} — Monte Carlo")
+
+
 def _run_basket(args):
     from src.data.fetcher import fetch_price
     from src.analytics.stationarity import adf_test, compute_half_life
@@ -672,6 +856,14 @@ def _run_basket(args):
     from src.strategies.pairs.viz import (
         plot_equity_curve, plot_trade_pnl, plot_backtest_metrics,
     )
+
+    if not getattr(args, "static_constituents", False):
+        _run_basket_dynamic(args)
+        return
+
+    if not args.stocks:
+        print("ERROR: --stocks is required unless --dynamic-constituents is set.")
+        sys.exit(1)
 
     etf      = args.etf.upper()
     stocks   = [s.strip().upper() for s in args.stocks]
@@ -840,15 +1032,36 @@ def _run_basket(args):
         f"Sharpe {bt_metrics['sharpe']:.2f}"
     )
 
+    # Weighted basket price: exp(log(etf) - spread) = etf * exp(-spread)
+    basket_prices = (etf_aligned * np.exp(-spread)).dropna()
+
     print("Opening windows...")
     _show(
-        plot_basket_spread(spread, zscore, signals, etf, stocks, params, split_date=split_date),
+        plot_basket_spread(
+            spread, zscore, signals, etf, stocks, params,
+            split_date=split_date,
+            etf_prices=etf_aligned,
+            basket_prices=basket_prices,
+        ),
         f"Basket — {etf} — Spread",
     )
     if not trades.empty:
         _show(plot_equity_curve(equity_curve, trades, etf, "BASKET", 20_000.0),
               f"Basket — {etf} — Equity")
-        _show(plot_trade_pnl(trades, etf, "BASKET"),
+
+        # Per-leg P&L breakdown: ETF leg and basket leg contributions
+        from src.strategies.basket.viz import plot_basket_trade_pnl
+        etf_at_entry    = etf_aligned.reindex(trades["entry_date"]).values
+        etf_at_exit     = etf_aligned.reindex(trades["exit_date"]).values
+        basket_at_entry = basket_prices.reindex(trades["entry_date"]).values
+        basket_at_exit  = basket_prices.reindex(trades["exit_date"]).values
+        etf_log_ret     = np.log(etf_at_exit / etf_at_entry)
+        basket_log_ret  = np.log(basket_at_exit / basket_at_entry)
+        direction       = trades["direction"].values
+        notional        = trades["notional"].values
+        etf_pct_arr     = direction *  etf_log_ret    * notional / 20_000.0
+        basket_pct_arr  = direction * -basket_log_ret * notional / 20_000.0
+        _show(plot_basket_trade_pnl(trades, etf, etf_pct_arr, basket_pct_arr),
               f"Basket — {etf} — Trade P&L")
         _show(plot_backtest_metrics(bt_metrics, trades, etf, "BASKET", params),
               f"Basket — {etf} — Metrics")
@@ -856,7 +1069,7 @@ def _run_basket(args):
         if getattr(args, "monte_carlo", False):
             from src.backtest.monte_carlo import bootstrap_returns
             from src.strategies.basket.viz import plot_monte_carlo
-            n_sims = getattr(args, "mc_sims", 5_000)
+            n_sims = getattr(args, "mc_sims", 10_000)
             print(f"Running Monte Carlo bootstrap ({n_sims:,} sims, daily returns)...")
             mc = bootstrap_returns(equity_curve, capital=20_000.0, n_sims=n_sims)
             _print_mc_summary(mc)
@@ -893,7 +1106,10 @@ def _run_basket_multi(args):
     vol_target    = getattr(args, "vol_target",    0.0)
     total_capital = 20_000.0
     leg_capital   = total_capital / len(baskets)
-    fold_bars     = 252  # 1 year per fold
+
+    period_years = {"1y": 1, "2y": 2, "3y": 3, "5y": 5, "10y": 10}.get(period, 5)
+    if n_folds == -1:  # --walk-forward given without a count → auto from period
+        n_folds = max(1, period_years - 1)
 
     params = {
         "period": period, "window": window,
@@ -901,7 +1117,8 @@ def _run_basket_multi(args):
         "cost_bps": args.cost_bps, "test_period": test_period,
     }
 
-    edgar_constituents = getattr(args, "edgar_constituents", False)
+    dynamic_constituents = not getattr(args, "static_constituents", False)
+    top_n = getattr(args, "top_n", 5)
 
     vix_series = None
     if vix_filter > 0:
@@ -911,165 +1128,282 @@ def _run_basket_multi(args):
         except Exception:
             print("WARNING: Could not fetch VIX — filter disabled.")
 
-    # ---- EDGAR walk-forward: point-in-time constituent history ----
-    if edgar_constituents and n_folds:
+    # ---- Dynamic constituent mode (EDGAR N-PORT) --------------------------------
+    if dynamic_constituents:
         from src.data.fetcher import fetch_prices_bulk
-        from src.data.edgar import build_constituent_history, get_constituents_at
+        from src.data.edgar import get_constituent_segments
+        from src.strategies.basket.backtest import run_basket_backtest_segmented
+
+        period_years = {"1y": 1, "2y": 2, "3y": 3, "5y": 5, "10y": 10}.get(period, 5)
+        full_end   = pd.Timestamp.today().normalize()
+        full_start = full_end - pd.DateOffset(years=period_years)
+        grace_days = max(max_hold_days, 30)
 
         print("\nUsing EDGAR N-PORT historical constituents (survivorship-bias corrected).")
 
-        period_years = {"1y": 1, "2y": 2, "3y": 3, "5y": 5, "10y": 10}.get(period, 5)
-        end_date   = pd.Timestamp.today().normalize()
-        start_date = end_date - pd.DateOffset(years=period_years)
-
-        edgar_history = {}
-        all_hist_tickers = set()
+        # Step 1: resolve constituent segments per ETF
+        # For pre-EDGAR dates (before ~April 2019), use the earliest available
+        # N-PORT filing's top-N as the fallback rather than today's composition.
+        raw_segments = {}
+        all_seg_tickers: set = set()
         etf_tickers = [etf for etf, _ in baskets]
-        for etf, _ in baskets:
-            print(f"  Fetching EDGAR history for {etf}...")
-            try:
-                hist = build_constituent_history(
-                    etf,
-                    start_date=start_date.strftime("%Y-%m-%d"),
-                    end_date=end_date.strftime("%Y-%m-%d"),
-                )
-                edgar_history[etf] = hist
-                for _, row in hist.iterrows():
-                    all_hist_tickers.update(row["constituents"])
-            except Exception as e:
-                print(f"  WARNING: EDGAR fetch failed for {etf}: {e}. Using fixed constituents.")
-                edgar_history[etf] = None
+        for etf, fallback_stocks in baskets:
+            print(f"  Resolving segments for {etf}...")
+            # Get segments without any pre-EDGAR fallback first
+            segs = get_constituent_segments(etf, full_start, full_end, top_n=top_n,
+                                            fallback_stocks=None)
+            if segs:
+                # If EDGAR doesn't cover the full start, prepend a segment using
+                # the earliest available filing's stocks (not today's stocks)
+                first_seg_start = segs[0][0]
+                if first_seg_start > full_start:
+                    earliest_stocks = segs[0][2][:top_n]
+                    pre_seg = (full_start, first_seg_start - pd.Timedelta(days=1), earliest_stocks)
+                    segs = [pre_seg] + list(segs)
+                    print(f"    Pre-EDGAR ({full_start.date()} to {pre_seg[1].date()}): "
+                          f"using earliest filing stocks [{', '.join(earliest_stocks)}]")
+            else:
+                # EDGAR completely unavailable — fall back to CLI stocks
+                fb = [s.replace("/", "-") for s in fallback_stocks] if fallback_stocks else []
+                segs = [(full_start, full_end, fb)]
+            segs = [(s, e, [t.replace("/", "-") for t in stx]) for s, e, stx in segs]
+            raw_segments[etf] = segs
+            for _, _, stx in segs:
+                all_seg_tickers.update(stx)
 
-        # Fetch all historical prices upfront
-        all_tickers = list((all_hist_tickers | set(etf_tickers)) - {""})
-        print(f"  Fetching prices for {len(all_tickers)} tickers ({period})...")
-        all_prices_dict = fetch_prices_bulk(all_tickers, period=period)
+        # Step 2: bulk-fetch all prices
+        all_tickers = list((all_seg_tickers | set(etf_tickers)) - {""})
+        print(f"  Fetching {len(all_tickers)} unique tickers ({period})...")
+        all_prices = fetch_prices_bulk(all_tickers, period=period)
 
-        fold_bars = 252
-        T_ref = min(
-            len(pd.Series(dtype=float, index=pd.bdate_range(start_date, end_date))),
-            n_folds * fold_bars + 300,
-        )
-        # Use the longest available price series as T reference
-        T = max(len(v) for v in all_prices_dict.values()) if all_prices_dict else 0
-
-        fold_combined_metrics = []
-        all_stitched_pnls     = []
-
-        for fold_k in range(n_folds):
-            start_idx = T - (n_folds - fold_k) * fold_bars
-            end_idx   = min(T - (n_folds - fold_k - 1) * fold_bars, T)
-            if start_idx < window + 10:
+        # Step 3: compute spread + signals per segment (with backward warmup and forward grace)
+        etf_seg_data: dict = {}
+        for etf, segs in raw_segments.items():
+            etf_px = all_prices.get(etf)
+            if etf_px is None:
+                print(f"  ERROR: no prices for {etf}, skipping.")
                 continue
-
-            # Find fold dates from any ETF price series
-            ref_series = next(iter(all_prices_dict.values()))
-            ref_index  = ref_series.index if hasattr(ref_series, "index") else pd.Series(ref_series).index
-            if start_idx >= len(ref_index) or end_idx - 1 >= len(ref_index):
-                continue
-            fold_start_date = ref_index[start_idx]
-            fold_end_date   = ref_index[end_idx - 1]
-
-            fold_leg_pnls = []
-
-            for etf, _ in baskets:
-                # Point-in-time constituents
-                hist = edgar_history.get(etf)
-                if hist is not None and not hist.empty:
-                    pit_tickers = get_constituents_at(hist, fold_start_date)
-                else:
-                    # Fall back to fixed stocks from CLI if EDGAR unavailable
-                    pit_tickers = next(s for e, s in baskets if e == etf)
-
-                available = [t for t in pit_tickers if t in all_prices_dict and t != etf]
-                if len(available) < 2:
+            etf_seg_data[etf] = []
+            for seg_start, seg_end, seg_stocks in segs:
+                avail = [s for s in seg_stocks if s in all_prices and s != etf]
+                if len(avail) < 2:
                     continue
-                available = available[:20]  # cap to avoid rank-deficiency
-
-                etf_s = all_prices_dict.get(etf)
-                if etf_s is None:
+                compute_start = max(etf_px.index[0],
+                                    seg_start - pd.Timedelta(days=int(window * 1.5)))
+                compute_end   = min(etf_px.index[-1],
+                                    seg_end   + pd.Timedelta(days=grace_days + 10))
+                cdf = pd.DataFrame({s: all_prices[s] for s in avail}).dropna()
+                ea  = etf_px.reindex(cdf.index).dropna()
+                cdf = cdf.reindex(ea.index)
+                cdf = cdf.loc[(cdf.index >= compute_start) & (cdf.index <= compute_end)]
+                ea  = ea.reindex(cdf.index).dropna()
+                cdf = cdf.reindex(ea.index)
+                if len(ea) < window + 10:
                     continue
-                if hasattr(etf_s, "loc"):
-                    etf_fold = etf_s.loc[fold_start_date:fold_end_date]
-                else:
-                    etf_fold = pd.Series(etf_s).loc[fold_start_date:fold_end_date]
-
-                const_df = pd.DataFrame(
-                    {t: all_prices_dict[t] for t in available}
-                ).loc[fold_start_date:fold_end_date].dropna()
-                etf_fold = etf_fold.reindex(const_df.index).dropna()
-                const_df = const_df.reindex(etf_fold.index)
-
-                if len(etf_fold) < window + 10:
-                    continue
-
-                spread_fold = rolling_basket_spread(
-                    etf_fold, const_df, window=window,
-                    ridge_alpha=args.ridge_alpha,
-                    regime_filter=args.regime_filter,
+                spread_full = rolling_basket_spread(
+                    ea, cdf, window=window,
+                    ridge_alpha=args.ridge_alpha, regime_filter=args.regime_filter,
                 )
-                signals_fold, _ = generate_basket_signals(
-                    spread_fold, window=window,
+                signals_full, _ = generate_basket_signals(
+                    spread_full, window=window,
                     z_entry=args.z_entry, z_exit=args.z_exit, z_stop=args.z_stop,
                     vix_series=vix_series, vix_threshold=vix_filter,
                 )
-                _, equity_fold, _ = run_basket_backtest(
-                    signals_fold, spread_fold, capital=leg_capital,
-                    cost_bps=args.cost_bps, n_stocks=len(available),
-                    max_hold_days=max_hold_days, vol_target=vol_target,
-                )
-                daily_pnl = equity_fold["equity"].diff().fillna(0)
-                fold_leg_pnls.append(daily_pnl.rename(etf))
+                etf_seg_data[etf].append((seg_start, seg_end, signals_full, spread_full, avail))
 
-            if not fold_leg_pnls:
-                print(f"  Fold {fold_k + 1}: no legs ran, skipping.")
-                continue
+            if not etf_seg_data.get(etf):
+                print(f"  WARNING: no valid segments computed for {etf}.")
 
-            fold_pnl_df   = pd.concat(fold_leg_pnls, axis=1, sort=True).fillna(0)
-            fold_comb_pnl = fold_pnl_df.sum(axis=1)
-            fold_equity   = (total_capital + fold_comb_pnl.cumsum()).to_frame("equity")
-
-            fm = _compute_metrics(fold_equity, total_capital)
-            fm["start"] = fold_comb_pnl.index[0]
-            fm["end"]   = fold_comb_pnl.index[-1]
-            fm["fold"]  = fold_k + 1
-            fm["n_trades"] = 0
-            fm["win_rate"] = float("nan")
-
-            fold_combined_metrics.append(fm)
-            all_stitched_pnls.append(fold_comb_pnl)
-            print(f"  Fold {fold_k + 1} ({fm['start'].date()} to {fm['end'].date()}): "
-                  f"{fm['total_return']:.1%}  Sharpe {fm['sharpe']:.2f}")
-
-        if not all_stitched_pnls:
-            print("ERROR: No fold data. Ensure period is long enough and EDGAR history is available.")
+        if not etf_seg_data:
+            print("ERROR: No ETFs produced valid segment data.")
             sys.exit(1)
 
-        full_pnl        = pd.concat(all_stitched_pnls).sort_index()
-        stitched_equity = (total_capital + full_pnl.cumsum()).to_frame("equity")
-        overall         = _compute_metrics(stitched_equity, total_capital)
-        overall["start"] = stitched_equity.index[0]
-        overall["end"]   = stitched_equity.index[-1]
+        for etf, segs in etf_seg_data.items():
+            print(f"\n  {etf}: {len(segs)} segment(s)")
+            for ss, se, _, _, stx in segs:
+                print(f"    {ss.date()} -> {se.date()}: [{', '.join(stx)}]")
 
-        print(
-            f"\nEDGAR Walk-Forward ({n_folds} folds): "
-            f"{overall['total_return']:.1%} return  |  "
-            f"Sharpe {overall['sharpe']:.2f}  |  "
-            f"Max DD {overall['max_drawdown']:.1%}"
-        )
+        ref_px = next(v for v in all_prices.values() if v is not None)
+
+        # ---- Dynamic walk-forward ------------------------------------------------
+        if n_folds:
+            T          = len(ref_px)
+            train_bars = T // period_years
+            fold_bars  = max(1, (T - train_bars) // n_folds)
+            fold_label = (f"{round(fold_bars / 252)}y" if fold_bars >= 200
+                          else f"{fold_bars}d")
+            print(f"\nRunning dynamic walk-forward ({n_folds} folds x {fold_label})...")
+            fold_combined_metrics = []
+            all_stitched_pnls     = []
+
+            for fold_k in range(n_folds):
+                start_idx = T - (n_folds - fold_k) * fold_bars
+                end_idx   = min(T - (n_folds - fold_k - 1) * fold_bars, T)
+                if start_idx < window + 10 or end_idx - 1 >= len(ref_px.index):
+                    continue
+                fold_start = ref_px.index[start_idx]
+                fold_end   = ref_px.index[end_idx - 1]
+
+                fold_leg_pnls  = []
+                fold_n_trades  = 0
+                fold_win_rates = []
+
+                for etf, _ in baskets:
+                    segs = etf_seg_data.get(etf)
+                    if not segs:
+                        continue
+                    fold_segs = []
+                    for ss, se, sigs, sprd, stx in segs:
+                        if se < fold_start or ss > fold_end:
+                            continue
+                        eff_s = max(ss, fold_start)
+                        eff_e = min(se, fold_end)
+                        sl = sigs.loc[(sigs.index >= eff_s) & (sigs.index <= eff_e)]
+                        if sl.empty:
+                            continue
+                        fold_segs.append((eff_s, eff_e, sl, sprd))
+                    if not fold_segs:
+                        continue
+
+                    n_sl = len(segs[-1][4]) if segs else 1
+                    t_fold, eq_fold, mf = run_basket_backtest_segmented(
+                        fold_segs, capital=leg_capital,
+                        cost_bps=args.cost_bps, n_stocks=n_sl,
+                        max_hold_days=max_hold_days, vol_target=vol_target,
+                    )
+                    fold_n_trades += mf.get("n_trades", 0)
+                    wr = mf.get("win_rate")
+                    if wr is not None and not (isinstance(wr, float) and _math.isnan(wr)):
+                        fold_win_rates.append(wr)
+                    if not t_fold.empty:
+                        fold_leg_pnls.append(eq_fold["equity"].diff().fillna(0).rename(etf))
+
+                if not fold_leg_pnls:
+                    print(f"  Fold {fold_k + 1}: no legs ran, skipping.")
+                    continue
+
+                fold_pnl_df   = pd.concat(fold_leg_pnls, axis=1, sort=True).fillna(0)
+                fold_comb_pnl = fold_pnl_df.sum(axis=1)
+                fold_equity   = (total_capital + fold_comb_pnl.cumsum()).to_frame("equity")
+                fm = _compute_metrics(fold_equity, total_capital)
+                fm["n_trades"] = fold_n_trades
+                fm["win_rate"] = (sum(fold_win_rates) / len(fold_win_rates)
+                                  if fold_win_rates else float("nan"))
+                fm["start"] = fold_comb_pnl.index[0]
+                fm["end"]   = fold_comb_pnl.index[-1]
+                fm["fold"]  = fold_k + 1
+                fold_combined_metrics.append(fm)
+                all_stitched_pnls.append(fold_comb_pnl)
+                print(f"  Fold {fold_k + 1} ({fm['start'].date()} to {fm['end'].date()}): "
+                      f"{fm['total_return']:.1%}  |  Sharpe {fm['sharpe']:.2f}  |  "
+                      f"{fold_n_trades} trades")
+
+            if not all_stitched_pnls:
+                print("ERROR: No fold data. Check period and EDGAR coverage.")
+                sys.exit(1)
+
+            full_pnl        = pd.concat(all_stitched_pnls).sort_index()
+            stitched_equity = (total_capital + full_pnl.cumsum()).to_frame("equity")
+            overall = _compute_metrics(stitched_equity, total_capital)
+            overall["n_trades"] = sum(fm["n_trades"] for fm in fold_combined_metrics)
+            all_wrs = [fm["win_rate"] for fm in fold_combined_metrics
+                       if not (isinstance(fm["win_rate"], float) and _math.isnan(fm["win_rate"]))]
+            overall["win_rate"] = sum(all_wrs) / len(all_wrs) if all_wrs else float("nan")
+            overall["start"]    = stitched_equity.index[0]
+            overall["end"]      = stitched_equity.index[-1]
+            print(
+                f"\nDynamic Walk-Forward ({n_folds} folds): "
+                f"{overall['total_return']:.1%} return  |  "
+                f"Sharpe {overall['sharpe']:.2f}  |  "
+                f"Max DD {overall['max_drawdown']:.1%}  |  "
+                f"{overall['n_trades']} trades total"
+            )
+            print("Opening windows...")
+            _show(
+                plot_walk_forward_results(stitched_equity, fold_combined_metrics, overall, params),
+                "Basket (dynamic) — Walk-Forward",
+            )
+            return
+
+        # ---- Dynamic OOS ---------------------------------------------------------
+        from src.strategies.basket.viz import plot_basket_combined, plot_basket_legs
+
+        leg_equities: dict = {}
+        leg_metrics:  dict = {}
+        daily_pnls:   list = []
+
+        for etf, _ in baskets:
+            segs = etf_seg_data.get(etf)
+            if not segs:
+                continue
+            # Strip stocks (5th element) — backtest function takes 4-tuples
+            oos_segs = [(ss, se, sigs, sprd) for ss, se, sigs, sprd, *_ in segs]
+            if test_period:
+                n_test = _PERIOD_BARS.get(test_period, 252)
+                etf_px = all_prices.get(etf)
+                if etf_px is not None and len(etf_px) > n_test:
+                    split_date = etf_px.index[-n_test]
+                    oos_segs = []
+                    for ss, se, sigs, sprd, *_ in segs:
+                        if se < split_date:
+                            continue
+                        eff_s = max(ss, split_date)
+                        sl = sigs.loc[(sigs.index >= eff_s) & (sigs.index <= se)]
+                        oos_segs.append((eff_s, se, sl, sprd))
+            if not oos_segs:
+                continue
+            n_sl = len(segs[-1][4]) if segs else 1
+            trades, equity_curve, metrics = run_basket_backtest_segmented(
+                oos_segs, capital=leg_capital,
+                cost_bps=args.cost_bps, n_stocks=n_sl,
+                max_hold_days=max_hold_days, vol_target=vol_target,
+            )
+            print(f"  {etf}: {metrics.get('n_trades', 0)} trades  |  "
+                  f"{metrics.get('total_return', 0):.1%} return  |  "
+                  f"Sharpe {metrics.get('sharpe', 0):.2f}")
+            leg_equities[etf] = equity_curve
+            leg_metrics[etf]  = metrics
+            daily_pnls.append(equity_curve["equity"].diff().fillna(0).rename(etf))
+
+        if not leg_equities:
+            print("ERROR: No baskets ran successfully.")
+            sys.exit(1)
+
+        pnl_df          = pd.concat(daily_pnls, axis=1, sort=True).fillna(0)
+        combined_pnl    = pnl_df.sum(axis=1)
+        combined_equity = (total_capital + combined_pnl.cumsum()).rename("equity").to_frame()
+        combined_equity.index.name = "date"
+        combined_metrics = _compute_metrics(combined_equity, total_capital)
+        combined_metrics["n_trades"] = sum(m.get("n_trades", 0) for m in leg_metrics.values())
+
+        period_label = f"({test_period} OOS)" if test_period else f"({period} full)"
+        print(f"\nCombined portfolio {period_label}: "
+              f"{combined_metrics['total_return']:.1%} return  |  "
+              f"Sharpe {combined_metrics['sharpe']:.2f}  |  "
+              f"Max DD {combined_metrics['max_drawdown']:.1%}")
+
+        for lbl in list(leg_equities):
+            eq = (leg_equities[lbl]["equity"]
+                  .reindex(combined_equity.index).ffill().fillna(leg_capital))
+            leg_equities[lbl] = eq.to_frame("equity")
 
         print("Opening windows...")
-        _show(
-            plot_walk_forward_results(stitched_equity, fold_combined_metrics, overall, params),
-            f"Basket (EDGAR) -- Walk-Forward",
-        )
-        return
+        _show(plot_basket_combined(combined_equity, combined_metrics,
+                                   list(leg_equities.keys()), params),
+              "Basket Portfolio (dynamic) — Combined")
+        _show(plot_basket_legs(leg_equities, leg_metrics, params),
+              "Basket Portfolio (dynamic) — Individual ETFs")
 
-    if edgar_constituents and not n_folds:
-        print(
-            "\nNOTE: --edgar-constituents has no effect without --walk-forward. "
-            "Using today's fixed composition."
-        )
+        if getattr(args, "monte_carlo", False):
+            from src.backtest.monte_carlo import bootstrap_returns
+            from src.strategies.basket.viz import plot_monte_carlo
+            n_sims = getattr(args, "mc_sims", 10_000)
+            print(f"Running Monte Carlo bootstrap ({n_sims:,} sims, daily-returns)...")
+            mc = bootstrap_returns(combined_equity, capital=total_capital, n_sims=n_sims)
+            _print_mc_summary(mc)
+            _show(plot_monte_carlo(mc, combined_metrics, "Portfolio (dynamic)", params),
+                  "Basket Portfolio (dynamic) — Monte Carlo")
+        return
 
     print(
         "\nNOTE: constituents are fixed at today's composition. "
@@ -1078,7 +1412,7 @@ def _run_basket_multi(args):
     )
 
     # ---- Phase 1: Fetch data and compute signals for all baskets ----
-    basket_data = []  # (label, spread, signals, n_stocks)
+    basket_data = []  # (label, spread, signals, n_stocks, etf_aligned, stocks)
 
     for etf, stocks in baskets:
         label = etf
@@ -1098,6 +1432,20 @@ def _run_basket_multi(args):
         if len(prices_dict) < 2:
             print(f"  ERROR: Need at least 2 constituents for {etf}. Skipping.")
             continue
+
+        # Warn if any constituent has meaningfully less history than the ETF.
+        # A short-history stock (e.g. GEV, which IPO'd 2024) will cause dropna()
+        # to silently trim the entire basket to that stock's start date.
+        etf_len = len(etf_prices.dropna())
+        for s, px in prices_dict.items():
+            stock_len = len(px.dropna())
+            coverage = stock_len / etf_len if etf_len > 0 else 1.0
+            if coverage < 0.85:
+                missing_bars = etf_len - stock_len
+                print(f"  WARNING: {s} only covers {coverage:.0%} of the {period} window "
+                      f"({missing_bars} bars missing). Basket history will be trimmed to "
+                      f"{px.dropna().index[0].date()} — consider replacing {s} with a "
+                      f"stock that has full {period} history for static backtests.")
 
         constituent_prices = pd.DataFrame(prices_dict).dropna()
         etf_aligned        = etf_prices.reindex(constituent_prices.index).dropna()
@@ -1127,15 +1475,20 @@ def _run_basket_multi(args):
             vix_series=vix_series, vix_threshold=vix_filter,
         )
 
-        basket_data.append((label, spread, signals, constituent_prices.shape[1]))
+        basket_data.append((label, spread, signals, constituent_prices.shape[1], etf_aligned, stocks))
 
     if not basket_data:
         print("ERROR: No baskets ran successfully.")
         sys.exit(1)
 
-    # ---- Phase 2a: Walk-forward (N non-overlapping 1y OOS folds) ----
+    # ---- Phase 2a: Walk-forward (N non-overlapping OOS folds) ----
     if n_folds:
-        print(f"\nRunning walk-forward validation ({n_folds} folds x 1y)...")
+        ref_T      = len(basket_data[0][1])  # first leg's spread as reference
+        train_bars = ref_T // period_years
+        fold_bars  = max(1, (ref_T - train_bars) // n_folds)
+        fold_label = (f"{round(fold_bars / 252)}y" if fold_bars >= 200
+                      else f"{fold_bars}d")
+        print(f"\nRunning walk-forward validation ({n_folds} folds x {fold_label})...")
 
         fold_combined_metrics = []
         all_stitched_pnls     = []
@@ -1146,7 +1499,7 @@ def _run_basket_multi(args):
             fold_n_trades  = 0
             fold_win_rates = []
 
-            for label, spread, signals, n_stocks_leg in basket_data:
+            for label, spread, signals, n_stocks_leg, *_ in basket_data:
                 T = len(spread)
                 fold_start_idx = T - (n_folds - fold_k) * fold_bars
                 fold_end_idx   = min(T - (n_folds - fold_k - 1) * fold_bars, T)
@@ -1174,8 +1527,9 @@ def _run_basket_multi(args):
                 if wr is not None and not (isinstance(wr, float) and _math.isnan(wr)):
                     fold_win_rates.append(wr)
 
-                daily_pnl = equity_fold["equity"].diff().fillna(0)
-                fold_leg_pnls.append(daily_pnl.rename(label))
+                if mf.get("n_trades", 0) > 0:
+                    daily_pnl = equity_fold["equity"].diff().fillna(0)
+                    fold_leg_pnls.append(daily_pnl.rename(label))
 
             if not fold_leg_pnls:
                 print(f"  Fold {fold_k + 1}: insufficient data, skipping.")
@@ -1225,16 +1579,17 @@ def _run_basket_multi(args):
         print("Opening windows...")
         _show(
             plot_walk_forward_results(stitched_equity, fold_combined_metrics, overall, params),
-            f"Walk-Forward -- {' + '.join(lb for lb, _, _, _ in basket_data)}",
+            f"Walk-Forward -- {' + '.join(lb for lb, *_ in basket_data)}",
         )
         return
 
     # ---- Phase 2b: Single OOS mode (existing behaviour) ----
     leg_equities = {}
     leg_metrics  = {}
+    leg_extras   = {}   # label → {trades, etf_aligned, basket_prices, spread, signals, stocks}
     daily_pnls   = []
 
-    for label, spread, signals, n_stocks_leg in basket_data:
+    for label, spread, signals, n_stocks_leg, etf_aligned, stocks in basket_data:
         T = len(spread)
         split_date = None
         if test_period:
@@ -1261,6 +1616,14 @@ def _run_basket_multi(args):
 
         leg_equities[label] = equity_curve
         leg_metrics[label]  = metrics
+        leg_extras[label]   = {
+            "trades":        trades,
+            "etf_aligned":   etf_aligned,
+            "basket_prices": etf_aligned * np.exp(-spread),
+            "spread":        spread,
+            "signals":       signals,
+            "stocks":        stocks,
+        }
 
         daily_pnl = equity_curve["equity"].diff().fillna(0)
         daily_pnls.append(daily_pnl.rename(label))
@@ -1316,12 +1679,46 @@ def _run_basket_multi(args):
     if getattr(args, "monte_carlo", False):
         from src.backtest.monte_carlo import bootstrap_returns
         from src.strategies.basket.viz import plot_monte_carlo
-        n_sims = getattr(args, "mc_sims", 5_000)
+        n_sims = getattr(args, "mc_sims", 10_000)
         print(f"Running Monte Carlo bootstrap ({n_sims:,} sims, daily-returns)...")
         mc = bootstrap_returns(combined_equity, capital=total_capital, n_sims=n_sims)
         _print_mc_summary(mc)
         _show(plot_monte_carlo(mc, combined_metrics, "Portfolio", params),
               "Basket Portfolio -- Monte Carlo")
+
+    # Per-leg spread and trade P&L breakdown charts
+    from src.strategies.basket.viz import plot_basket_spread, plot_basket_trade_pnl
+    from src.strategies.pairs.signals import compute_zscore as _compute_zscore
+    for lbl, extra in leg_extras.items():
+        etf_al   = extra["etf_aligned"]
+        basket_p = extra["basket_prices"]
+        spread_l = extra["spread"]
+        signals_l = extra["signals"]
+        stocks_l  = extra["stocks"]
+        trades_l  = extra["trades"]
+        zscore_l  = _compute_zscore(spread_l, window=window)
+
+        _show(
+            plot_basket_spread(spread_l, zscore_l, signals_l, lbl, stocks_l, params,
+                               etf_prices=etf_al, basket_prices=basket_p),
+            f"Basket — {lbl} — Spread",
+        )
+
+        if not trades_l.empty:
+            etf_at_entry = etf_al.reindex(trades_l["entry_date"]).values
+            etf_at_exit  = etf_al.reindex(trades_l["exit_date"]).values
+            bsk_at_entry = basket_p.reindex(trades_l["entry_date"]).values
+            bsk_at_exit  = basket_p.reindex(trades_l["exit_date"]).values
+            etf_log_ret  = np.log(etf_at_exit  / etf_at_entry)
+            bsk_log_ret  = np.log(bsk_at_exit  / bsk_at_entry)
+            direction    = trades_l["direction"].values
+            notional     = trades_l["notional"].values
+            etf_pct_arr  = direction *  etf_log_ret * notional / leg_capital
+            bsk_pct_arr  = direction * -bsk_log_ret * notional / leg_capital
+            _show(
+                plot_basket_trade_pnl(trades_l, lbl, etf_pct_arr, bsk_pct_arr),
+                f"Basket — {lbl} — Trade P&L",
+            )
 
 
 def _register_basket_multi(subparsers):
@@ -1348,10 +1745,12 @@ def _register_basket_multi(subparsers):
     parser.add_argument("--test-period", default=None, metavar="PERIOD",
                         choices=["3mo", "6mo", "1y", "2y"],
                         help="Hold out the most recent PERIOD as out-of-sample test window.")
-    parser.add_argument("--walk-forward", default=None, type=int, metavar="N",
-                        dest="walk_forward",
-                        help="Walk-forward validation: run N non-overlapping 1-year OOS folds "
-                             "(requires --period >= N+1 years). Overrides --test-period.")
+    parser.add_argument("--walk-forward", default=None, type=int, nargs="?", const=-1,
+                        metavar="N", dest="walk_forward",
+                        help="Walk-forward validation. Without N: auto-selects folds from "
+                             "period (5y→4, 3y→2, 10y→9). With N: splits OOS evenly into N "
+                             "folds (e.g. --period 5y --walk-forward 2 = two 2-year folds). "
+                             "Overrides --test-period.")
     parser.add_argument("--ridge-alpha", default=0.0, type=float, metavar="A",
                         dest="ridge_alpha",
                         help="Ridge (L2) regularisation for OLS basket fit (default: 0 = off). "
@@ -1360,9 +1759,15 @@ def _register_basket_multi(subparsers):
                         dest="regime_filter",
                         help="Suppress spread when normalised OLS coefficient shift exceeds T "
                              "(default: 0 = off). Detects structural breaks. Try 0.20–0.50.")
+    parser.add_argument("--static", action="store_true", dest="static_constituents",
+                        help="Use today's fixed basket composition instead of EDGAR N-PORT history "
+                             "(survivorship bias warning). Supply stocks via --basket ETF:S1,S2,...")
+    parser.add_argument("--dynamic-constituents", action="store_true", dest="dynamic_constituents",
+                        help="(Deprecated — dynamic is now the default. Has no effect.)")
     parser.add_argument("--edgar-constituents", action="store_true", dest="edgar_constituents",
-                        help="Use EDGAR N-PORT historical constituents for point-in-time survivorship "
-                             "bias correction (requires --walk-forward).")
+                        help="(Deprecated alias for --dynamic-constituents.)")
+    parser.add_argument("--top-n", default=5, type=int, dest="top_n", metavar="N",
+                        help="Number of top ETF holdings to track from EDGAR N-PORT (default: 5).")
     parser.add_argument("--max-hold-days", default=0, type=int, metavar="N", dest="max_hold_days",
                         help="Force-close positions held longer than N calendar days (0 = off, e.g. 30).")
     parser.add_argument("--vix-filter", default=0.0, type=float, metavar="LEVEL", dest="vix_filter",
@@ -1371,7 +1776,7 @@ def _register_basket_multi(subparsers):
                         help="Annualised spread vol target as fraction of capital (0 = off, e.g. 0.10).")
     parser.add_argument("--monte-carlo", action="store_true", dest="monte_carlo",
                         help="Run Monte Carlo bootstrap on combined portfolio after backtest.")
-    parser.add_argument("--mc-sims", default=5_000, type=int, dest="mc_sims",
+    parser.add_argument("--mc-sims", default=10_000, type=int, dest="mc_sims",
                         help="Number of Monte Carlo simulations (default: 5000).")
     parser.set_defaults(func=_run_basket_multi)
 
@@ -1380,8 +1785,16 @@ def _register_basket(subparsers):
     parser = subparsers.add_parser("basket", help="Basket / ETF arbitrage")
     parser.add_argument("--etf",     required=True, metavar="TICKER",
                         help="ETF ticker to trade against the basket, e.g. XLF")
-    parser.add_argument("--stocks",  required=True, nargs="+", metavar="TICKER",
-                        help="Constituent tickers, e.g. GS MS JPM BAC C")
+    parser.add_argument("--stocks",  required=False, nargs="+", metavar="TICKER", default=None,
+                        help="Constituent tickers, e.g. GS MS JPM BAC C. "
+                             "Used in --static mode or as pre-EDGAR fallback.")
+    parser.add_argument("--static", action="store_true", dest="static_constituents",
+                        help="Use today's fixed composition instead of EDGAR N-PORT history "
+                             "(survivorship bias warning). Requires --stocks.")
+    parser.add_argument("--dynamic-constituents", action="store_true", dest="dynamic_constituents",
+                        help="(Deprecated — dynamic is now the default. Has no effect.)")
+    parser.add_argument("--top-n", default=5, type=int, dest="top_n", metavar="N",
+                        help="Number of top ETF holdings to track from EDGAR N-PORT (default: 5).")
     parser.add_argument("--period",  default="2y",  help="Data lookback (default: 2y)")
     parser.add_argument("--window",  default=60, type=int,
                         help="Rolling OLS and z-score window in days (default: 60)")
@@ -1409,7 +1822,7 @@ def _register_basket(subparsers):
                         help="Annualised spread vol target as fraction of capital (0 = off, e.g. 0.10).")
     parser.add_argument("--monte-carlo", action="store_true", dest="monte_carlo",
                         help="Run Monte Carlo bootstrap on trade P&L after backtest.")
-    parser.add_argument("--mc-sims", default=5_000, type=int, dest="mc_sims",
+    parser.add_argument("--mc-sims", default=10_000, type=int, dest="mc_sims",
                         help="Number of Monte Carlo simulations (default: 5000).")
     parser.set_defaults(func=_run_basket)
 

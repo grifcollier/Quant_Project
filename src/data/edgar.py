@@ -292,6 +292,14 @@ _OPENFIGI_SLEEP = 2.0   # seconds between batches
 
 _cusip_map: dict[str, str] = {}     # in-memory layer; populated on first use
 
+# Valid US equity ticker: 1-5 letters, optional share-class suffix (BRK/B, BRK.B).
+# Rejects currency/exchange artifacts like "PXDEUR" or "VODLN".
+_US_TICKER_RE = re.compile(r"^[A-Z]{1,5}([./][A-Z])?$")
+
+
+def _is_valid_us_ticker(ticker: str) -> bool:
+    return bool(_US_TICKER_RE.match(ticker.upper()))
+
 
 def _load_cusip_cache() -> None:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -348,11 +356,14 @@ def resolve_cusips(cusips: list[str]) -> dict[str, str]:
             figi_list = result.get("data") or []
             ticker = ""
 
-            # Priority: US-exchange common stock > any common stock > first result
+            # US-exchange listings only. We never fall back to foreign listings:
+            # a CUSIP that has no US listing (e.g. a name acquired/delisted) would
+            # otherwise resolve to an artifact like "PXDEUR" (a EUR-denominated
+            # listing) that is untradeable and not in yfinance. Leaving it
+            # unresolved correctly drops the holding from the basket.
             for priority in (
                 lambda i: i.get("exchCode") == "US" and "Common" in i.get("securityType", ""),
-                lambda i: "Common" in i.get("securityType", "") and i.get("marketSector") == "Equity",
-                lambda i: i.get("marketSector") == "Equity",
+                lambda i: i.get("exchCode") == "US" and i.get("marketSector") == "Equity",
             ):
                 for item in figi_list:
                     if priority(item) and item.get("ticker"):
@@ -360,6 +371,12 @@ def resolve_cusips(cusips: list[str]) -> dict[str, str]:
                         break
                 if ticker:
                     break
+
+            # Guard against any remaining currency/exchange-suffixed artifacts:
+            # valid US equity tickers are <=5 alphabetic chars (optionally with a
+            # share-class suffix like BRK/B). Reject anything else.
+            if ticker and not _is_valid_us_ticker(ticker):
+                ticker = ""
 
             # Only store successful resolutions — never cache empty strings so
             # temporarily-unresolvable CUSIPs (data gaps, new listings) get
@@ -476,6 +493,10 @@ def build_constituent_history(
         print(f"  [{i+1:2d}/{n}] {ticker} {row['filing_date'].date()} ...", end="\r")
         holdings = _fetch_holdings_cached(cik, row["accession"], row["primary_doc"])
 
+        # Drop currency/exchange artifacts (e.g. "PXDEUR") that may exist in
+        # older holdings caches built before the US-only resolution fix.
+        holdings = [h for h in holdings if _is_valid_us_ticker(h["ticker"])]
+
         if min_pct > 0:
             holdings = [h for h in holdings if h["pct_val"] >= min_pct]
         if top_n:
@@ -506,6 +527,102 @@ def get_constituents_at(history: pd.DataFrame, date: pd.Timestamp) -> list[str]:
     prior = history[history["filing_date"] <= date]
     row   = prior.iloc[-1] if not prior.empty else history.iloc[0]
     return list(row["constituents"])
+
+
+def get_constituent_segments(
+    ticker: str,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    top_n: int = 5,
+    fallback_stocks: list | None = None,
+) -> list:
+    """
+    Return time segments of stable top-N ETF constituents over a date range.
+
+    Each segment is a (seg_start, seg_end, stocks) tuple where the top-N
+    constituent set is unchanged throughout. Segments are derived from
+    quarterly EDGAR N-PORT filings — a new segment starts whenever the
+    top-N set changes between consecutive filings.
+
+    For dates before the first available N-PORT filing (~mid-2019), the
+    fallback_stocks list is used. If EDGAR is unreachable or returns no
+    data, a single fallback segment covering the full range is returned.
+
+    Parameters
+    ----------
+    ticker          : ETF ticker (e.g. "XLF").
+    start_date      : Start of the backtest period.
+    end_date        : End of the backtest period.
+    top_n           : Number of top holdings to track (default 5).
+    fallback_stocks : Stocks to use when EDGAR data is unavailable.
+
+    Returns
+    -------
+    List of (seg_start, seg_end, stocks) tuples, chronologically ordered.
+    """
+    try:
+        history = build_constituent_history(
+            ticker,
+            start_date.strftime("%Y-%m-%d"),
+            end_date.strftime("%Y-%m-%d"),
+            top_n=top_n,
+        )
+    except Exception as exc:
+        print(f"  EDGAR fetch failed ({exc}) — using fallback stocks.")
+        if fallback_stocks:
+            return [(start_date, end_date, list(fallback_stocks))]
+        return []
+
+    if history.empty:
+        if fallback_stocks:
+            return [(start_date, end_date, list(fallback_stocks))]
+        return []
+
+    # Drop filings with fewer than 2 resolved tickers
+    history = history[
+        history["constituents"].apply(lambda x: len([t for t in x if t]) >= 2)
+    ].reset_index(drop=True)
+
+    if history.empty:
+        if fallback_stocks:
+            return [(start_date, end_date, list(fallback_stocks))]
+        return []
+
+    segments: list = []
+    first_filing = history["filing_date"].iloc[0]
+
+    # Pre-EDGAR segment: from start_date up to the first filing
+    if start_date < first_filing and fallback_stocks:
+        pre_end = first_filing - pd.Timedelta(days=1)
+        if pre_end >= start_date:
+            segments.append((start_date, pre_end, list(fallback_stocks)))
+
+    # Build segments from consecutive filings — new segment on every top-N change
+    prev_stocks: list | None = None
+    seg_start = max(start_date, first_filing)
+
+    for _, row in history.iterrows():
+        stocks      = [t for t in row["constituents"] if t][:top_n]
+        filing_date = row["filing_date"]
+
+        if prev_stocks is None:
+            prev_stocks = stocks
+            seg_start   = max(start_date, filing_date)
+        elif set(stocks) != set(prev_stocks):
+            seg_end = filing_date - pd.Timedelta(days=1)
+            if seg_end >= seg_start:
+                segments.append((seg_start, seg_end, prev_stocks))
+            seg_start   = filing_date
+            prev_stocks = stocks
+
+    # Close the final segment at end_date
+    if prev_stocks:
+        segments.append((seg_start, end_date, prev_stocks))
+
+    if not segments and fallback_stocks:
+        return [(start_date, end_date, list(fallback_stocks))]
+
+    return segments
 
 
 def summarize_changes(history: pd.DataFrame) -> pd.DataFrame:

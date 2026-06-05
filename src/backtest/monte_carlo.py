@@ -7,7 +7,7 @@ import pandas as pd
 def bootstrap_trades(
     trades_df: pd.DataFrame,
     capital: float = 20_000.0,
-    n_sims: int = 5_000,
+    n_sims: int = 10_000,
     seed: int = 42,
 ) -> dict:
     """
@@ -79,7 +79,7 @@ def bootstrap_trades(
 def bootstrap_returns(
     equity_curve: pd.DataFrame,
     capital: float = 20_000.0,
-    n_sims: int = 5_000,
+    n_sims: int = 10_000,
     seed: int = 42,
 ) -> dict:
     """
