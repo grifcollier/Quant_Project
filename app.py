@@ -257,7 +257,7 @@ with tab5:
     with col2:
         z_entry     = st.slider("Z-entry threshold", 1.0, 3.0, 1.5, 0.1)
         z_exit      = st.slider("Z-exit threshold",  0.0, 1.0, 0.25, 0.05)
-        monte_carlo = st.checkbox("Monte Carlo (10k sims)")
+        monte_carlo = st.checkbox("Monte Carlo (10k sims, backtest only)")
 
     is_multi = (mode == "Multi-basket (all 5 ETFs)")
 
