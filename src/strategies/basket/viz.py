@@ -108,10 +108,9 @@ def plot_basket_prices(
             annotation_font=dict(color=_AMBER, size=10),
         )
 
-    stocks_str = ", ".join(stocks[:5]) + ("..." if len(stocks) > 5 else "")
     fig.update_layout(
         title=dict(
-            text=f"{etf} vs Weighted Basket — {etf} vs [{stocks_str}]  |  "
+            text=f"{etf} vs Weighted Basket  |  "
                  f"period: {params.get('period', '')}",
             font=dict(size=16, color=_TEXT),
         ),
@@ -407,10 +406,9 @@ def plot_basket_spread(
             annotation_font=dict(color=_AMBER, size=10),
         )
 
-    stocks_str = ", ".join(stocks[:5]) + ("..." if len(stocks) > 5 else "")
     fig.update_layout(
         title=dict(
-            text=f"Basket — {etf} vs [{stocks_str}]  |  period: {params.get('period', '')}",
+            text=f"Basket — {etf} vs Top-5 Holdings  |  period: {params.get('period', '')}",
             font=dict(size=16, color=_TEXT),
         ),
         height=880 if show_prices else 580,
@@ -718,18 +716,19 @@ def plot_walk_forward_results(
     drawdown = (equity / equity.cummax() - 1) * 100
     starting = float(equity.iloc[0])
 
+    # Table is placed below the charts (full width) so it scales cleanly with fold count.
     fig = make_subplots(
-        rows=3, cols=2,
-        row_heights=[0.42, 0.22, 0.36],
-        column_widths=[0.62, 0.38],
+        rows=4, cols=1,
+        row_heights=[0.30, 0.15, 0.22, 0.33],
         shared_xaxes=False,
         specs=[
-            [{"rowspan": 1}, {"rowspan": 3, "type": "table"}],
-            [{}             , None],
-            [{}             , None],
+            [{"type": "xy"}],
+            [{"type": "xy"}],
+            [{"type": "xy"}],
+            [{"type": "table"}],
         ],
-        subplot_titles=["Stitched OOS Equity", "", "Drawdown (%)", "Sharpe by Fold"],
-        vertical_spacing=0.07,
+        subplot_titles=["Stitched OOS Equity", "Drawdown (%)", "Sharpe by Fold", ""],
+        vertical_spacing=0.06,
     )
 
     # Equity curve
@@ -767,7 +766,7 @@ def plot_walk_forward_results(
     ), row=3, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color=_SUBTEXT, line_width=1, row=3, col=1)
 
-    # Metrics table: Overall | Fold 1 | Fold 2 | ...
+    # Metrics table: folds as rows, metrics as columns (full width avoids cramped columns).
     from src.viz.theme import _HEADER_BG, _ROW_A, _ROW_B, _GOOD_BG, _WARN_BG, _BAD_BG
 
     def _fmt(v, pct=False):
@@ -782,53 +781,45 @@ def plot_walk_forward_results(
         warn = (v > lo) if lo is not None and not invert else (v < lo if lo else False)
         return _GOOD_BG if good else (_WARN_BG if warn else _BAD_BG)
 
-    all_metrics = [overall_metrics] + fold_metrics
-    col_labels  = ["Overall"] + [f"F{fm['fold']}" for fm in fold_metrics]
-
-    rows_spec = [
-        ("Period",   lambda m: (
-            (f"{m['start'].strftime('%b%y')}-{m['end'].strftime('%b%y')}"
-             if "start" in m else "--"), _ROW_A)),
-        ("Return",   lambda m: (_fmt(m.get("total_return"), pct=True),
-                                 _hl(m.get("total_return"), 0.05, 0))),
-        ("Sharpe",   lambda m: (_fmt(m.get("sharpe")),
-                                 _hl(m.get("sharpe"), 1.0, 0.5))),
-        ("Sortino",  lambda m: (_fmt(m.get("sortino")),
-                                 _hl(m.get("sortino"), 1.5, 0.75))),
-        ("Max DD",   lambda m: (_fmt(m.get("max_drawdown"), pct=True),
-                                 _hl(m.get("max_drawdown"), -0.10, -0.25, invert=True))),
-        ("Trades",   lambda m: (str(int(m.get("n_trades", 0))), _ROW_A)),
-        ("Win Rate", lambda m: (_fmt(m.get("win_rate"), pct=True),
-                                 _hl(m.get("win_rate"), 0.55, 0.45))),
+    all_entries = [("Overall", overall_metrics)] + [
+        (f"F{fm['fold']}", fm) for fm in fold_metrics
     ]
 
-    col_data = {"Metric": [r[0] for r in rows_spec]}
-    col_bg   = {"Metric": [_ROW_A if i % 2 == 0 else _ROW_B for i in range(len(rows_spec))]}
+    t_fold, t_period, t_return = [], [], []
+    t_sharpe, t_sortino, t_maxdd, t_trades, t_winrate = [], [], [], [], []
+    row_bgs = []
 
-    for label, m in zip(col_labels, all_metrics):
-        vals, bgs = [], []
-        for _, fn in rows_spec:
-            v, bg = fn(m)
-            vals.append(v)
-            bgs.append(bg)
-        col_data[label] = vals
-        col_bg[label]   = bgs
+    for i, (label, m) in enumerate(all_entries):
+        t_fold.append(label)
+        if "start" in m:
+            t_period.append(f"{m['start'].strftime('%b%y')}–{m['end'].strftime('%b%y')}")
+        else:
+            t_period.append("--")
+        t_return.append(_fmt(m.get("total_return"), pct=True))
+        t_sharpe.append(_fmt(m.get("sharpe")))
+        t_sortino.append(_fmt(m.get("sortino")))
+        t_maxdd.append(_fmt(m.get("max_drawdown"), pct=True))
+        t_trades.append(str(int(float(m.get("n_trades", 0)))))
+        t_winrate.append(_fmt(m.get("win_rate"), pct=True))
+        if label == "Overall":
+            row_bgs.append("rgba(31,119,180,0.12)")
+        else:
+            row_bgs.append(_ROW_A if i % 2 == 1 else _ROW_B)
 
-    header_vals = list(col_data.keys())
     fig.add_trace(go.Table(
         header=dict(
-            values=header_vals,
+            values=["Fold", "Period", "Return", "Sharpe", "Sortino", "Max DD", "Trades", "Win%"],
             fill_color=_HEADER_BG,
-            font=dict(color="white", size=9, family="Inter, sans-serif"),
-            align="left", height=24,
+            font=dict(color="white", size=11, family="Inter, sans-serif"),
+            align="left", height=28,
         ),
         cells=dict(
-            values=[col_data[h] for h in header_vals],
-            fill_color=[col_bg[h] for h in header_vals],
-            font=dict(color=_TEXT, size=9, family="Inter, sans-serif"),
-            align="left", height=22,
+            values=[t_fold, t_period, t_return, t_sharpe, t_sortino, t_maxdd, t_trades, t_winrate],
+            fill_color=[row_bgs] * 8,
+            font=dict(color=_TEXT, size=11, family="Inter, sans-serif"),
+            align="left", height=24,
         ),
-    ), row=1, col=2)
+    ), row=4, col=1)
 
     n_folds      = len(fold_metrics)
     period_label = params.get("period", "")
@@ -842,12 +833,15 @@ def plot_walk_forward_results(
     else:
         fold_size_label = "?"
 
+    table_height = max(200, 34 + len(all_entries) * 26)
+    total_height = 580 + table_height
+
     fig.update_layout(
         title=dict(
             text=f"Walk-Forward Validation ({n_folds} folds x {fold_size_label})  |  {period_label}  |  {cost_label}",
             font=dict(size=16, color=_TEXT),
         ),
-        height=740,
+        height=total_height,
         template="plotly_white",
         hovermode="x unified",
         showlegend=False,
