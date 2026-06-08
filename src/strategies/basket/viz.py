@@ -719,7 +719,7 @@ def plot_walk_forward_results(
     # Table is placed below the charts (full width) so it scales cleanly with fold count.
     fig = make_subplots(
         rows=4, cols=1,
-        row_heights=[0.30, 0.15, 0.22, 0.33],
+        row_heights=[0.32, 0.18, 0.25, 0.25],
         shared_xaxes=False,
         specs=[
             [{"type": "xy"}],
@@ -833,8 +833,8 @@ def plot_walk_forward_results(
     else:
         fold_size_label = "?"
 
-    table_height = max(200, 34 + len(all_entries) * 26)
-    total_height = 800 + table_height
+    table_height = max(220, 34 + len(all_entries) * 26)
+    total_height = 1100 + table_height
 
     fig.update_layout(
         title=dict(
