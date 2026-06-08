@@ -728,7 +728,7 @@ def plot_walk_forward_results(
             [{"type": "table"}],
         ],
         subplot_titles=["Stitched OOS Equity", "Drawdown (%)", "Sharpe by Fold", ""],
-        vertical_spacing=0.06,
+        vertical_spacing=0.10,
     )
 
     # Equity curve
@@ -834,7 +834,7 @@ def plot_walk_forward_results(
         fold_size_label = "?"
 
     table_height = max(200, 34 + len(all_entries) * 26)
-    total_height = 580 + table_height
+    total_height = 800 + table_height
 
     fig.update_layout(
         title=dict(
