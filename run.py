@@ -1478,6 +1478,24 @@ def _run_basket_multi(args):
               f"Sharpe {combined_metrics['sharpe']:.2f}  |  "
               f"Max DD {combined_metrics['max_drawdown']:.1%}")
 
+        if getattr(args, "factor_analysis", False):
+            from src.analytics.fama_french import (
+                fetch_ff5_factors, align_returns, run_ff5_regression,
+                rolling_ff5_loadings, annual_attribution,
+            )
+            from src.strategies.basket.viz_ff5 import plot_ff5_analysis
+            ff5            = fetch_ff5_factors()
+            excess_ret, factors_aligned = align_returns(combined_equity, ff5)
+            result         = run_ff5_regression(excess_ret, factors_aligned)
+            rolling_betas  = rolling_ff5_loadings(excess_ret, factors_aligned)
+            annual_attr    = annual_attribution(rolling_betas, factors_aligned)
+            alpha_ann      = result.params["const"] * 252
+            print(f"  alpha={alpha_ann:.2%}/yr  R2={result.rsquared:.3f}"
+                  f"  Mkt-beta={result.params['Mkt-RF']:.3f}")
+            _show(plot_ff5_analysis(result, rolling_betas, annual_attr, period, params),
+                  "Basket (dynamic) — FF5 Analysis")
+            return
+
         for lbl in list(leg_equities):
             eq = (leg_equities[lbl]["equity"]
                   .reindex(combined_equity.index).ffill().fillna(leg_capital))
@@ -1874,6 +1892,9 @@ def _register_basket_multi(subparsers):
                         help="Run Monte Carlo bootstrap on combined portfolio after backtest.")
     parser.add_argument("--mc-sims", default=10_000, type=int, dest="mc_sims",
                         help="Number of Monte Carlo simulations (default: 5000).")
+    parser.add_argument("--factor-analysis", action="store_true", dest="factor_analysis",
+                        help="Run Fama-French 5-factor regression on combined portfolio returns "
+                             "and save figure. Skips standard portfolio charts.")
     parser.add_argument("--save-images", default=None, metavar="DIR", dest="save_images",
                         help="Export all figures as PNG files to DIR (requires kaleido).")
     parser.add_argument("--save-figs", default=None, metavar="DIR", dest="save_figs",

@@ -77,12 +77,13 @@ c5.metric("MC 95th Percentile",                m["mc"],   m["mc_d"])
 st.divider()
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Multi-Basket Portfolio",
     "🔁 Walk-Forward Validation",
     "🎲 Monte Carlo",
     "🔍 Single Basket — XLK",
     "⚙️ Custom Run",
+    "📐 Factor Analysis",
 ])
 
 
@@ -319,6 +320,26 @@ with tab5:
             st.plotly_chart(pio.from_json(json_str), use_container_width=True, key=f"custom_{i}")
         except Exception as exc:
             st.error(f"Could not render figure {i + 1}: {exc}")
+
+
+# ── Tab 6: Factor Analysis ────────────────────────────────────────────────────
+with tab6:
+    st.markdown("""
+    Fama-French 5-factor regression decomposes the combined portfolio's excess returns into
+    systematic exposures (**Mkt-RF**, **SMB**, **HML**, **RMW**, **CMA**) and a residual
+    **alpha**. A market-neutral arbitrage strategy should show near-zero factor loadings and
+    a positive, statistically significant alpha. The rolling 252-day loadings track how
+    exposures shift over time; the annual attribution chart shows how much each factor
+    contributed to each calendar year's return.
+
+    *Factor data: Kenneth French Data Library (daily FF5 factors).*
+    """)
+
+    figs = _figs(f"ff_analysis{sfx}")
+    if not figs:
+        _no_data_warning()
+    else:
+        _show(figs[0])
 
 
 # ── Footer ────────────────────────────────────────────────────────────────────

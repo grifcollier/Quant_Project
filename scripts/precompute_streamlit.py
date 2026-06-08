@@ -87,5 +87,25 @@ if __name__ == "__main__":
         "--save-figs", str(xlk_10y_dir),
     ])
 
+    # 7. FF5 factor analysis (5y)
+    ff_dir = OUT / "ff_analysis"
+    ff_dir.mkdir(parents=True, exist_ok=True)
+    run("FF5 factor analysis (5y)", [
+        PYTHON, "run.py", "basket-multi",
+        "--period", "5y", "--factor-analysis",
+        *BASKETS,
+        "--save-figs", str(ff_dir),
+    ])
+
+    # 8. FF5 factor analysis (10y)
+    ff_10y_dir = OUT / "ff_analysis_10y"
+    ff_10y_dir.mkdir(parents=True, exist_ok=True)
+    run("FF5 factor analysis (10y)", [
+        PYTHON, "run.py", "basket-multi",
+        "--period", "10y", "--factor-analysis",
+        *BASKETS,
+        "--save-figs", str(ff_10y_dir),
+    ])
+
     print("\nAll figures saved to", OUT)
     print("  Commit the streamlit_app/precomputed/ directory to the repo.")
