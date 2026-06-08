@@ -1385,8 +1385,8 @@ def _run_basket_multi(args):
                 fm["n_trades"] = fold_n_trades
                 fm["win_rate"] = (sum(fold_win_rates) / len(fold_win_rates)
                                   if fold_win_rates else float("nan"))
-                fm["start"] = fold_comb_pnl.index[0]
-                fm["end"]   = fold_comb_pnl.index[-1]
+                fm["start"] = fold_start
+                fm["end"]   = fold_end
                 fm["fold"]  = fold_k + 1
                 fold_combined_metrics.append(fm)
                 all_stitched_pnls.append(fold_comb_pnl)
