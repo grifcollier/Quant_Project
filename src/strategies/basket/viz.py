@@ -728,7 +728,7 @@ def plot_walk_forward_results(
             [{"type": "table"}],
         ],
         subplot_titles=["Stitched OOS Equity", "Drawdown (%)", "Sharpe by Fold", ""],
-        vertical_spacing=0.10,
+        vertical_spacing=0.07,
     )
 
     # Equity curve
