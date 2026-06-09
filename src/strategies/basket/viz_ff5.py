@@ -217,20 +217,20 @@ def plot_ff5_analysis(
         hovermode="x unified",
         showlegend=True,
         barmode="relative",
-        # Rolling loadings legend: horizontal strip in the gap between rows 1 and 2,
-        # anchored to the bottom-left so it sits just above the rolling chart.
+        # Rolling loadings legend: horizontal strip in the gap between rows 2 and 3,
+        # anchored to the top-left so it sits just below the rolling chart.
         legend=dict(
             orientation="h",
-            x=0.0, y=0.648,
-            xanchor="left", yanchor="bottom",
+            x=0.0, y=0.335,
+            xanchor="left", yanchor="top",
             font=dict(size=9),
             bgcolor="rgba(255,255,255,0.85)",
             bordercolor="rgba(0,0,0,0.1)",
             borderwidth=1,
         ),
-        # Attribution legend: inside the annual attribution chart, top-left corner.
+        # Attribution legend: right-center of the attribution chart area.
         legend2=dict(
-            x=0.01, y=0.19,
+            x=0.52, y=0.19,
             xanchor="left", yanchor="top",
             font=dict(size=9),
             bgcolor="rgba(255,255,255,0.85)",
