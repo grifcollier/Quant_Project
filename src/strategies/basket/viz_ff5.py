@@ -75,7 +75,7 @@ def plot_ff5_analysis(
             "",
             "Annual Factor Attribution  (%)",
         ],
-        vertical_spacing=0.13,
+        vertical_spacing=0.15,
         horizontal_spacing=0.06,
     )
 
