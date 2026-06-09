@@ -20,6 +20,7 @@ The flagship strategy is **ETF basket arbitrage** — a mean-reversion approach 
   - [Signal Generation](#signal-generation)
   - [Walk-Forward Validation](#walk-forward-validation)
   - [Monte Carlo Analysis](#monte-carlo-analysis)
+  - [Fama-French 5-Factor Analysis](#fama-french-5-factor-analysis)
   - [Sample Results](#sample-results)
 - [Other Strategies](#other-strategies)
 - [Live Trading (Alpaca Paper)](#live-trading-alpaca-paper)
@@ -56,6 +57,9 @@ A single holdout period tells you how a strategy performed on one piece of histo
 
 **Monte Carlo simulation for result robustness**
 Even after fixing the survivorship bias, the Sharpe numbers came back high enough that I wanted to keep pressure-testing them. Resampling the daily return stream 10,000 times checks whether the result holds across different orderings of the same trades, or whether I'd just gotten lucky with the sequence.
+
+**Fama-French 5-factor analysis for alpha verification**
+High Sharpe ratios can be misleading — a strategy might just be quietly loading up on a known risk premium (market beta, value tilt, etc.) and getting paid for systematic exposure rather than genuine edge. FF5 regression quantifies exactly how much of the portfolio's return comes from each systematic factor versus unexplained alpha. For a market-neutral spread strategy, the expected result is near-zero factor loadings and a positive alpha — and that's what the numbers show.
 
 **Alpaca paper trading**
 After validating the strategy through backtesting and Monte Carlo analysis, I wanted to go a step further and test it in a live market environment. I integrated Alpaca's paper trading API to run the strategy in real time, with a GitHub Actions workflow executing automatically after market close each day. This surfaces the kind of edge cases that backtests never encounter — stale data, corporate actions, API outages — and forces every signal to be generated systematically with no discretionary override.
@@ -152,6 +156,43 @@ Output reports the 5th/50th/95th percentile return and maximum drawdown across a
 
 ---
 
+### Fama-French 5-Factor Analysis
+
+After backtesting and Monte Carlo validation, the next question is: *where do the returns actually come from?* High Sharpe ratios are only impressive if they represent genuine alpha — not just disguised exposure to a known systematic risk premium that any index fund captures for free.
+
+The Fama-French 5-factor model decomposes excess returns into five systematic components:
+
+| Factor | Captures |
+|---|---|
+| **Mkt-RF** | Overall market exposure (beta) |
+| **SMB** | Small-cap tilt (small minus big) |
+| **HML** | Value tilt (high minus low book-to-price) |
+| **RMW** | Profitability tilt (robust minus weak) |
+| **CMA** | Investment tilt (conservative minus aggressive) |
+| **Alpha** | Return unexplained by any factor — true edge |
+
+Factor data is sourced directly from [Kenneth French's data library](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html) (daily frequency). The regression is run on excess returns (portfolio return minus risk-free rate).
+
+**Results — combined portfolio:**
+
+| Metric | 5y | 10y |
+|---|---|---|
+| Market beta (Mkt-RF) | 0.010 | 0.010 |
+| R² | 0.014 | 0.016 |
+| Annualised alpha | 3.88%/yr | 4.30%/yr |
+
+An R² of ~1.5% means the five factors together explain only 1.5% of the portfolio's daily return variance — the remaining 98.5% is idiosyncratic to the spread-trading signals. A market beta of 0.01 is statistically indistinguishable from zero, confirming market neutrality. The positive annualised alpha is the return the strategy earns from the spread itself, not from riding any systematic factor.
+
+The Streamlit app includes a **Factor Analysis** tab with an interactive three-panel chart: factor betas with confidence intervals, rolling 252-day factor loadings over time, and an annual return attribution breakdown.
+
+```bash
+# Run FF5 analysis on the combined portfolio
+python run.py basket-multi --period 5y --factor-analysis \
+  --basket XLF: --basket XLV: --basket XLI: --basket XLK: --basket XLE:
+```
+
+---
+
 ### Sample Results
 
 All results below are **out-of-sample** walk-forward results using EDGAR dynamic constituents (survivorship-bias corrected):
@@ -245,7 +286,7 @@ An interactive web app built with Streamlit and deployed to Streamlit Community 
 
 The app has two modes:
 
-**Pre-computed tabs** — five tabs that load instantly from Plotly JSON figures committed to the repo, generated once with `python scripts/precompute_streamlit.py`. Covers the multi-basket portfolio, walk-forward validation, Monte Carlo analysis, and a single-basket XLK drill-down. A 5y / 10y toggle switches between pre-computed result sets.
+**Pre-computed tabs** — six tabs that load instantly from Plotly JSON figures committed to the repo, generated once with `python scripts/precompute_streamlit.py`. Covers the multi-basket portfolio, walk-forward validation, Monte Carlo analysis, a single-basket XLK drill-down, and Fama-French 5-factor analysis. A 5y / 10y toggle switches between pre-computed result sets.
 
 **Custom Run tab** — runs a live backtest against real data on the fly. Supports both single-ETF and multi-basket modes, adjustable z-score thresholds, and separate "Run Backtest" and "Run Walk-Forward Validation" buttons. Data is fetched from yfinance and EDGAR on first run (1–2 min), then cached.
 
@@ -263,13 +304,15 @@ Quant_Project/
 │   │   ├── basket/               # ETF basket arbitrage (flagship)
 │   │   │   ├── backtest.py       # Single-segment + segmented backtest engine
 │   │   │   ├── signals.py        # Z-score signal generation
-│   │   │   └── viz.py            # Plotly dashboards (equity, spread, walk-forward)
+│   │   │   ├── viz.py            # Plotly dashboards (equity, spread, walk-forward)
+│   │   │   └── viz_ff5.py        # Fama-French 5-factor analysis chart
 │   │   ├── pairs/                # Pairs trading
 │   │   ├── pca/                  # PCA stat-arb
 │   │   └── cta/                  # Trend-following
 │   │
 │   ├── analytics/
-│   │   └── basket.py             # Rolling OLS spread, ridge regression, regime filter
+│   │   ├── basket.py             # Rolling OLS spread, ridge regression, regime filter
+│   │   └── fama_french.py        # FF5 factor fetch, OLS regression, rolling loadings, attribution
 │   │
 │   ├── data/
 │   │   ├── fetcher.py            # yfinance wrapper with CSV caching
@@ -306,6 +349,10 @@ python run.py basket-multi --period 5y --walk-forward \
 
 # Walk-forward with 2 long (2-year) folds + Monte Carlo
 python run.py basket-multi --period 5y --walk-forward 2 --monte-carlo \
+  --basket XLF: --basket XLV: --basket XLI: --basket XLK: --basket XLE:
+
+# Fama-French 5-factor analysis on combined portfolio returns
+python run.py basket-multi --period 5y --factor-analysis \
   --basket XLF: --basket XLV: --basket XLI: --basket XLK: --basket XLE:
 
 # Static mode (fixed constituents, opt-in)
