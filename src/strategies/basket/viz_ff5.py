@@ -163,6 +163,7 @@ def plot_ff5_analysis(
     all_bg.append(_ROW_A)
 
     fig.add_trace(go.Table(
+        columnwidth=[2.2, 1.5, 1.3, 1.3, 1.3, 0.9],
         header=dict(
             values=["Factor", "β", "SE", "t-stat", "p-val", "Sig"],
             fill_color=_HEADER_BG,
@@ -216,23 +217,27 @@ def plot_ff5_analysis(
         hovermode="x unified",
         showlegend=True,
         barmode="relative",
+        # Rolling loadings legend: horizontal strip in the gap between rows 1 and 2,
+        # anchored to the bottom-left so it sits just above the rolling chart.
         legend=dict(
-            x=-0.25, y=0.52,
-            xanchor="left", yanchor="middle",
+            orientation="h",
+            x=0.0, y=0.648,
+            xanchor="left", yanchor="bottom",
             font=dict(size=9),
             bgcolor="rgba(255,255,255,0.85)",
             bordercolor="rgba(0,0,0,0.1)",
             borderwidth=1,
         ),
+        # Attribution legend: inside the annual attribution chart, top-left corner.
         legend2=dict(
-            x=1.02, y=0.20,
+            x=0.01, y=0.19,
             xanchor="left", yanchor="top",
             font=dict(size=9),
             bgcolor="rgba(255,255,255,0.85)",
             bordercolor="rgba(0,0,0,0.1)",
             borderwidth=1,
         ),
-        margin=dict(l=280, r=150, t=70, b=40),
+        margin=dict(l=80, r=40, t=70, b=40),
     )
     fig.update_xaxes(showgrid=True, gridcolor=_GRID)
     fig.update_yaxes(gridcolor=_GRID)
