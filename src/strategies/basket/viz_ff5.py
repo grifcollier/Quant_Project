@@ -75,7 +75,7 @@ def plot_ff5_analysis(
             "",
             "Annual Factor Attribution  (%)",
         ],
-        vertical_spacing=0.09,
+        vertical_spacing=0.13,
         horizontal_spacing=0.06,
     )
 
@@ -196,7 +196,8 @@ def plot_ff5_analysis(
                 x=year_labels,
                 y=[v * 100 for v in vals],
                 marker_color=_FACTOR_COLORS.get(col_name, _SUBTEXT),
-                showlegend=False,
+                showlegend=True,
+                legend="legend2",
             ), row=3, col=1)
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -210,20 +211,28 @@ def plot_ff5_analysis(
             ),
             font=dict(size=15, color=_TEXT),
         ),
-        height=900,
+        height=950,
         template="plotly_white",
         hovermode="x unified",
         showlegend=True,
         barmode="relative",
         legend=dict(
-            x=-0.11, y=0.55,
+            x=-0.25, y=0.52,
             xanchor="left", yanchor="middle",
             font=dict(size=9),
             bgcolor="rgba(255,255,255,0.85)",
             bordercolor="rgba(0,0,0,0.1)",
             borderwidth=1,
         ),
-        margin=dict(l=160, r=30, t=70, b=40),
+        legend2=dict(
+            x=1.02, y=0.20,
+            xanchor="left", yanchor="top",
+            font=dict(size=9),
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="rgba(0,0,0,0.1)",
+            borderwidth=1,
+        ),
+        margin=dict(l=280, r=150, t=70, b=40),
     )
     fig.update_xaxes(showgrid=True, gridcolor=_GRID)
     fig.update_yaxes(gridcolor=_GRID)
