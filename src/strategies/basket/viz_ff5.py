@@ -87,16 +87,20 @@ def plot_ff5_analysis(
     pvals  = [result.pvalues[k] for k in param_keys]
     colors = [_GREEN if b >= 0 else _RED for b in betas]
 
+    # Encode the beta value and significance stars in the y-axis label so that
+    # no floating text overlaps the error bar lines.
+    y_labels = [
+        f"{lbl}: {b:+.4f} {_sig_stars(p)}" if _sig_stars(p) else f"{lbl}: {b:+.4f}"
+        for lbl, b, p in zip(factor_labels, betas, pvals)
+    ]
+
     fig.add_trace(go.Bar(
         x=betas,
-        y=factor_labels,
+        y=y_labels,
         orientation="h",
         marker_color=colors,
         error_x=dict(type="data", array=errors, visible=True,
                      color=_SUBTEXT, thickness=1.5, width=6),
-        text=[f"  {b:.4f}{_sig_stars(p)}" for b, p in zip(betas, pvals)],
-        textposition="outside",
-        textfont=dict(size=10, color=_TEXT),
         showlegend=False,
         name="",
     ), row=1, col=1)
@@ -212,14 +216,14 @@ def plot_ff5_analysis(
         showlegend=True,
         barmode="relative",
         legend=dict(
-            x=0.01, y=0.60,
-            xanchor="left", yanchor="top",
+            x=-0.11, y=0.55,
+            xanchor="left", yanchor="middle",
             font=dict(size=9),
             bgcolor="rgba(255,255,255,0.85)",
             bordercolor="rgba(0,0,0,0.1)",
             borderwidth=1,
         ),
-        margin=dict(l=60, r=30, t=70, b=40),
+        margin=dict(l=160, r=30, t=70, b=40),
     )
     fig.update_xaxes(showgrid=True, gridcolor=_GRID)
     fig.update_yaxes(gridcolor=_GRID)
