@@ -38,11 +38,33 @@ def get_positions() -> dict:
 
 def get_position_details() -> dict:
     """Return positions as {symbol: {"notional": float, "created_at": datetime}}."""
-    positions = _get_client().get_all_positions()
+    from alpaca.trading.requests import GetOrdersRequest
+    from datetime import datetime, timezone, timedelta
+
+    client    = _get_client()
+    positions = client.get_all_positions()
+    pos_syms  = {p.symbol for p in positions}
+
+    # Derive open date from earliest filled order per symbol (Position has no created_at)
+    open_dates = {}
+    if pos_syms:
+        try:
+            after = datetime.now(tz=timezone.utc) - timedelta(days=365)
+            orders = client.get_orders(
+                filter=GetOrdersRequest(status="closed", after=after, limit=500)
+            )
+            for o in orders:
+                if o.symbol not in pos_syms or o.filled_at is None:
+                    continue
+                if o.symbol not in open_dates or o.filled_at < open_dates[o.symbol]:
+                    open_dates[o.symbol] = o.filled_at
+        except Exception:
+            pass
+
     return {
         p.symbol: {
             "notional":   float(p.market_value),
-            "created_at": p.created_at,
+            "created_at": open_dates.get(p.symbol),
         }
         for p in positions
     }

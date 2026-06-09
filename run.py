@@ -2571,6 +2571,9 @@ def _run_trade_basket(args, acct, capital, execute=False):
             return
         print(f"EDGAR top-{top_n} for {etf} (today): {', '.join(stocks)}")
 
+    # Alpaca uses dot notation (BRK.B) while EDGAR uses slash notation (BRK/B)
+    stocks = [s.replace("/", ".") for s in stocks]
+
     window        = getattr(args, "window",        60)
     z_entry       = getattr(args, "z_entry",       1.5)
     z_exit        = getattr(args, "z_exit",        0.25)
