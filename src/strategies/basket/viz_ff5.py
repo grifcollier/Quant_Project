@@ -217,21 +217,22 @@ def plot_ff5_analysis(
         hovermode="x unified",
         showlegend=True,
         barmode="relative",
-        # Rolling loadings legend: horizontal strip in the gap between rows 2 and 3,
-        # anchored to the top-left so it sits just below the rolling chart.
+        # Rolling loadings legend: horizontal strip centered in the gap between rows 2 and 3.
+        # Gap is y=[0.207, 0.337]; midpoint ≈ 0.272.
         legend=dict(
             orientation="h",
-            x=0.0, y=0.335,
-            xanchor="left", yanchor="top",
+            x=0.0, y=0.272,
+            xanchor="left", yanchor="middle",
             font=dict(size=9),
             bgcolor="rgba(255,255,255,0.85)",
             bordercolor="rgba(0,0,0,0.1)",
             borderwidth=1,
         ),
-        # Attribution legend: right-center of the attribution chart area.
+        # Attribution legend: to the right of col 1 (which ends at x≈0.583),
+        # sitting in the table column area vertically aligned with row 3.
         legend2=dict(
-            x=0.52, y=0.19,
-            xanchor="left", yanchor="top",
+            x=0.65, y=0.104,
+            xanchor="left", yanchor="middle",
             font=dict(size=9),
             bgcolor="rgba(255,255,255,0.85)",
             bordercolor="rgba(0,0,0,0.1)",
