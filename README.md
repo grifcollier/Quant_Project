@@ -189,7 +189,19 @@ Factor data is sourced directly from [Kenneth French's data library](https://mba
 
 An R² of ~1.5% means the five factors together explain only 1.5% of the portfolio's daily return variance — the remaining 98.5% is idiosyncratic to the spread-trading signals. A market beta of 0.01 is statistically indistinguishable from zero, confirming market neutrality. The positive annualised alpha is the return the strategy earns from the spread itself, not from riding any systematic factor.
 
-The Streamlit app includes a **Factor Analysis** tab with an interactive three-panel chart: factor betas with confidence intervals, rolling 252-day factor loadings over time, and an annual return attribution breakdown.
+![Factor betas with confidence intervals — 5y combined portfolio](Screenshot%202026-06-12%20104614.png)
+
+The factor betas chart shows each coefficient with its confidence interval. Alpha (daily) is statistically significant at the 1% level (***); the market beta (Mkt-RF) is significant but tiny at 0.010 — economically indistinguishable from zero. SMB loads negatively (slight large-cap tilt from the ETF side of the spread), while RMW loads positively, consistent with a profitability tilt.
+
+![Rolling 252-day factor loadings and full-period regression table](Screenshot%202026-06-12%20104632.png)
+
+The rolling loadings chart confirms the factor exposures are stable across the full period — no regime shifts or structural breaks in the relationship. The regression table on the right shows the full OLS output: Alpha t-stat of 4.82 (p < 0.0001), confirming the daily alpha is not a statistical artefact.
+
+![Annual factor attribution — return decomposed by year](Screenshot%202026-06-12%20104640.png)
+
+The annual attribution chart breaks down each year's return into its factor components. Alpha (orange) dominates in every year, confirming the return is driven by the spread signal rather than systematic factor exposure. The thin slivers of other factors are consistent with the near-zero betas in the regression.
+
+The Streamlit app includes a **Factor Analysis** tab with these three interactive charts.
 
 ```bash
 # Run FF5 analysis on the combined portfolio
