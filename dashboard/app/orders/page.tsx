@@ -1,4 +1,4 @@
-import { getOrders } from '@/lib/alpaca';
+import { getOrders, type AlpacaOrder } from '@/lib/alpaca';
 import {
   Table, Tr, Td, ErrorBanner, EmptyState, PageHeader, fmt,
 } from '../components/ui';
@@ -6,12 +6,10 @@ import {
 export const dynamic = 'force-dynamic';
 
 export default async function OrdersPage() {
-  let orders = [], err = '';
+  let orders: AlpacaOrder[] = [], err = '';
   try { orders = await getOrders(); } catch (e: unknown) { err = (e as Error).message; }
 
-  const filled = (orders as Awaited<ReturnType<typeof getOrders>>).filter(
-    (o) => o.status === 'filled'
-  );
+  const filled = orders.filter(o => o.status === 'filled');
 
   return (
     <div className="space-y-6">
@@ -42,8 +40,8 @@ export default async function OrdersPage() {
                 <Td><span className="font-semibold text-zinc-100">{o.symbol}</span></Td>
                 <Td>
                   <span className={
-                    o.side === 'buy' ? 'text-emerald-400' :
-                    o.side === 'sell' ? 'text-red-400' :
+                    o.side === 'buy'        ? 'text-emerald-400' :
+                    o.side === 'sell'       ? 'text-red-400' :
                     o.side === 'sell_short' ? 'text-blue-400' :
                     'text-yellow-400'
                   }>

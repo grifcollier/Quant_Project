@@ -1,4 +1,4 @@
-import { getAccount, getPositions } from '@/lib/alpaca';
+import { getAccount, getPositions, type AlpacaAccount, type AlpacaPosition } from '@/lib/alpaca';
 import {
   StatCard, Table, Tr, Td, ErrorBanner, EmptyState, PageHeader,
   fmt, fmtPct, fmtSigned, colorSigned,
@@ -7,14 +7,16 @@ import {
 export const dynamic = 'force-dynamic';
 
 export default async function PositionsPage() {
-  let account = null, positions = [], err = '';
+  let account: AlpacaAccount | null = null;
+  let positions: AlpacaPosition[]   = [];
+  let err = '';
   try {
     [account, positions] = await Promise.all([getAccount(), getPositions()]);
   } catch (e: unknown) {
     err = (e as Error).message;
   }
 
-  const pos          = positions as Awaited<ReturnType<typeof getPositions>>;
+  const pos          = positions;
   const totalUpl     = pos.reduce((s, p) => s + parseFloat(p.unrealized_pl), 0);
   const totalMktVal  = pos.reduce((s, p) => s + parseFloat(p.market_value),  0);
   const totalCost    = pos.reduce((s, p) => s + parseFloat(p.cost_basis),    0);
