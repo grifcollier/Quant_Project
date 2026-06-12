@@ -1,43 +1,33 @@
-"""Google Sheets trade journal for daily paper trading runs."""
+"""SQLite trade journal for daily paper trading runs."""
 
-import json
 import os
+import sqlite3
 from datetime import datetime
+from pathlib import Path
 
-HEADERS = [
-    "Date", "Time (ET)", "ETF", "Z-Score", "Signal",
-    "Orders Placed", "Mode", "Error",
-]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_DB_PATH   = Path(os.environ.get("DB_PATH") or _REPO_ROOT / "trades.db")
 
-
-def _get_sheet():
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    creds_json = os.environ.get("GOOGLE_SHEETS_CREDS")
-    sheet_id   = os.environ.get("GOOGLE_SHEET_ID")
-
-    if not creds_json:
-        raise ValueError("GOOGLE_SHEETS_CREDS env var not set.")
-    if not sheet_id:
-        raise ValueError("GOOGLE_SHEET_ID env var not set.")
-
-    creds_dict = json.loads(creds_json)
-    scopes     = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds      = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    gc         = gspread.authorize(creds)
-    return gc.open_by_key(sheet_id).sheet1
-
-
-def _ensure_header(sheet) -> None:
-    existing = sheet.get_all_values()
-    if not existing or existing[0] != HEADERS:
-        sheet.insert_row(HEADERS, index=1, value_input_option="RAW")
+_CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS trade_signals (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    date          TEXT    NOT NULL,
+    time_et       TEXT    NOT NULL,
+    etf           TEXT    NOT NULL,
+    z_score       REAL,
+    signal        TEXT    NOT NULL,
+    orders_placed INTEGER,
+    mode          TEXT    NOT NULL,
+    error         INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at    TEXT    NOT NULL
+)
+"""
 
 
 def log_trade(result: dict, mode: str) -> None:
     """
-    Append one row to the Google Sheet for a single basket run.
+    Append one row to the local SQLite trade log.
 
     Parameters
     ----------
@@ -45,18 +35,27 @@ def log_trade(result: dict, mode: str) -> None:
              Keys: etf, signal, z_score, n_orders, error
     mode   : "EXECUTE" or "DRY-RUN"
     """
-    sheet = _get_sheet()
-    _ensure_header(sheet)
-
-    now = datetime.now()
-    row = [
-        now.strftime("%Y-%m-%d"),
-        now.strftime("%H:%M"),
-        result["etf"],
-        round(result["z_score"], 4) if result["z_score"] is not None else "",
-        result["signal"],
-        result["n_orders"] if mode == "EXECUTE" else "",
-        mode,
-        "YES" if result["error"] else "",
-    ]
-    sheet.append_row(row, value_input_option="USER_ENTERED")
+    conn = sqlite3.connect(_DB_PATH)
+    try:
+        conn.execute(_CREATE_TABLE)
+        now = datetime.now()
+        conn.execute(
+            """INSERT INTO trade_signals
+               (date, time_et, etf, z_score, signal, orders_placed, mode, error, error_message, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                now.strftime("%Y-%m-%d"),
+                now.strftime("%H:%M"),
+                result["etf"],
+                result["z_score"],
+                result["signal"],
+                result["n_orders"] if mode == "EXECUTE" else None,
+                mode,
+                1 if result["error"] else 0,
+                str(result["error"]) if result["error"] else None,
+                now.isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()

@@ -9,6 +9,8 @@ jobs:
   trade:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -33,3 +35,12 @@ jobs:
           GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
           GOOGLE_SHEET_ID:     ${{ secrets.GOOGLE_SHEET_ID }}
         run: python scripts/daily_trade.py --execute
+
+      - name: Persist trades.db
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add trades.db
+          git diff --cached --quiet || git commit -m "chore: update trades.db [skip ci]"
+          git push

@@ -42,3 +42,8 @@ secrets.json
 .idea/
 *.swp
 *.swo
+
+
+# Next.js dashboard build artifacts
+dashboard/.next/
+dashboard/node_modules/
