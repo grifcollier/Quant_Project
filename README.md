@@ -67,6 +67,9 @@ High Sharpe ratios can be misleading — a strategy might just be quietly loadin
 **Alpaca paper trading**
 After validating the strategy through backtesting and Monte Carlo analysis, I wanted to go a step further and test it in a live market environment. I integrated Alpaca's paper trading API to run the strategy in real time, with a GitHub Actions workflow executing automatically after market close each day. This surfaces the kind of edge cases that backtests never encounter — stale data, corporate actions, API outages — and forces every signal to be generated systematically with no discretionary override.
 
+**Custom trading dashboard instead of relying on Alpaca's UI**
+Alpaca's native interface is functional but not built for monitoring a systematic strategy. It's difficult to get a clear picture of position-level performance at a glance — percentage returns aren't front and center, there's no way to view aggregated P&L trends over time, and the layout is designed for discretionary traders, not algo monitoring. I also wanted something publicly accessible: since the strategy is running live, I wanted anyone to be able to check in and see how it's doing without needing an account. Building a custom Next.js dashboard gave me exactly the view I actually wanted — real-time percentage returns on every open position, a full realized P&L history with FIFO lot matching, and a Returns tab that shows performance broken down by week or month with an interactive chart. Deploying to Vercel means the live data is accessible to anyone via a public URL, with the Alpaca API keys secured server-side and never exposed to the browser.
+
 ---
 
 ## Basket Strategy (Flagship)
@@ -299,26 +302,29 @@ The app has two modes:
 
 **[grifcollier-quant-project-2o6srbqeo-grifcolliers-projects.vercel.app](https://grifcollier-quant-project-2o6srbqeo-grifcolliers-projects.vercel.app)**
 
-A real-time trading monitor built with **Next.js 15** and deployed to Vercel. It reads live data directly from the Alpaca paper trading account and displays the current state of the portfolio — no manual updates, no pre-computed snapshots.
+A real-time portfolio monitor built with **Next.js 15** and deployed to Vercel. Every page fetches live data directly from the Alpaca paper trading account on each request — no caching, no pre-computed snapshots, no manual refresh needed. The dashboard is publicly accessible so anyone can follow along with the live paper trading without needing an Alpaca account; API credentials are secured server-side and never exposed to the browser.
 
 | Tab | What it shows |
 |---|---|
 | **Overview** | Portfolio equity, buying power, open position value with unrealized P&L, today's P&L |
-| **Positions** | All open positions — qty, avg entry, current price, market value, unrealized return |
-| **Orders** | Full filled order history — side, fill price, notional value |
-| **P&L** | All closed trades with FIFO lot matching — realized P&L per trade |
-| **Returns** | Aggregated performance over time — daily, weekly, or monthly breakdowns |
+| **Positions** | All open positions with percentage return on each, avg entry, current price, market value, and cost basis |
+| **Orders** | Full filled order history — side, fill price, notional value, timestamp |
+| **P&L** | Every closed trade with FIFO lot matching — entry/exit prices, hold time, realized P&L |
+| **Returns** | Aggregated performance over time with an interactive chart — daily, weekly, or monthly view |
 
 ![Positions page — 20 open positions with market value and unrealized P&L](Screenshot%202026-06-12%20104252.png)
 
+The **Positions page** shows every open position with its current percentage return front and center — the view that Alpaca's native interface doesn't make easy to see. Stat cards across the top summarise total market value, aggregate unrealized P&L, and available buying power.
+
 ![Returns tab — weekly realized P&L bar chart](Screenshot%202026-06-12%20104243.png)
 
-The **Returns tab** has an interactive SVG bar chart with four selectable metrics (Realized P&L, Win Rate, Average Return, Average Hold Days), three granularity modes (Daily / Weekly / Monthly), and five timeframe windows (30D / 90D / 6M / 1Y / All). Hovering a bar shows the exact period stats. Below the chart, a period breakdown table lists the last 20 periods with the same granularity toggle.
+The **Returns tab** has an interactive SVG bar chart (built from scratch, no charting library) with four selectable metrics (Realized P&L, Win Rate, Average Return, Average Hold Days), three granularity modes (Daily / Weekly / Monthly), and five timeframe windows (30D / 90D / 6M / 1Y / All). Bars are green for positive periods and red for negative. Hovering a bar shows the exact period stats in a tooltip. A period breakdown table below the chart lists the last 20 periods with the same granularity toggle.
 
-**Architecture:**
-- Next.js App Router — server components fetch Alpaca data at request time (`force-dynamic`); the Returns chart is a `'use client'` component for interactivity
-- FIFO lot matching (`lib/trades.ts`) correctly handles Alpaca's fill activity format, which labels all closing sells the same regardless of whether the original position was long or short
-- All Alpaca API calls use `https://paper-api.alpaca.markets` with credentials injected at runtime; keys are never committed to the repo
+**Technical notes:**
+- Next.js App Router with `force-dynamic` rendering — data is always fresh at request time, no stale cache
+- The Returns chart is a `'use client'` component so the metric/granularity/timeframe selectors are interactive without a page reload; everything else is a server component
+- FIFO lot matching (`lib/trades.ts`) correctly computes realized P&L from Alpaca's fill activity stream, which doesn't distinguish between closing a long vs opening a short — the matching logic infers it from position direction
+- All Alpaca API calls target `https://paper-api.alpaca.markets`; credentials are injected at runtime from Vercel environment variables and never reach the client
 
 **Deployment:**
 - Hosted on Vercel with the root directory set to `dashboard/`
