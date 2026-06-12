@@ -25,8 +25,8 @@ The flagship strategy is **ETF basket arbitrage** — a mean-reversion approach 
   - [Fama-French 5-Factor Analysis](#fama-french-5-factor-analysis)
   - [Sample Results](#sample-results)
 - [Other Strategies](#other-strategies)
-- [Live Trading (Alpaca Paper)](#live-trading-alpaca-paper)
 - [Streamlit App](#streamlit-app)
+- [Live Trading (Alpaca Paper)](#live-trading-alpaca-paper)
 - [Live Trading Dashboard](#live-trading-dashboard)
 - [Architecture](#architecture)
 - [CLI Reference](#cli-reference)
@@ -263,27 +263,6 @@ A systematic momentum strategy using EWMAC (Exponentially Weighted Moving Averag
 
 ---
 
-## Live Trading (Alpaca Paper)
-
-The platform is currently in **live paper-trading testing** via Alpaca Markets. Each trading day after market close (4:30pm ET), a GitHub Actions workflow automatically:
-
-1. Queries EDGAR N-PORT for the current top-5 holdings of each ETF
-2. Fetches 1-year price history via the Alpaca data API
-3. Computes the rolling spread z-score and evaluates signals
-4. Places paper orders via the Alpaca trading API
-5. Logs results (signal, z-score, orders) to a Google Sheets trade journal
-
-```yaml
-# .github/workflows/daily_trade.yml
-on:
-  schedule:
-    - cron: "30 20 * * 1-5"   # 4:30 PM EDT Mon-Fri
-```
-
-The GitHub Action mirrors the production environment exactly, with Alpaca API keys injected via repository secrets. Paper trading results are accumulated to validate live signal quality before any transition to real capital.
-
----
-
 ## Streamlit App
 
 **[grifcollier-quant-project.streamlit.app](https://grifcollier-quant-project.streamlit.app)**
@@ -295,6 +274,26 @@ The app has two modes:
 **Pre-computed tabs** — six tabs that load instantly from Plotly JSON figures committed to the repo, generated once with `python scripts/precompute_streamlit.py`. Covers the multi-basket portfolio, walk-forward validation, Monte Carlo analysis, a single-basket XLK drill-down, and Fama-French 5-factor analysis. A 5y / 10y toggle switches between pre-computed result sets.
 
 **Custom Run tab** — runs a live backtest against real data on the fly. Supports both single-ETF and multi-basket modes, adjustable z-score thresholds, and separate "Run Backtest" and "Run Walk-Forward Validation" buttons. Data is fetched from yfinance and EDGAR on first run (1–2 min), then cached.
+
+---
+
+## Live Trading (Alpaca Paper)
+
+The platform is currently in **live paper-trading testing** via Alpaca Markets. Each trading day after market close (4:30pm ET), a GitHub Actions workflow automatically:
+
+1. Queries EDGAR N-PORT for the current top-5 holdings of each ETF
+2. Fetches 1-year price history via the Alpaca data API
+3. Computes the rolling spread z-score and evaluates signals
+4. Places paper orders via the Alpaca trading API
+
+```yaml
+# .github/workflows/daily_trade.yml
+on:
+  schedule:
+    - cron: "30 20 * * 1-5"   # 4:30 PM EDT Mon-Fri
+```
+
+The GitHub Action mirrors the production environment exactly, with Alpaca API keys injected via repository secrets. Trade monitoring and performance tracking moved from a Google Sheets journal to the custom Next.js dashboard (see below), which gives a cleaner real-time view of open positions, order history, and cumulative P&L without needing to maintain a separate spreadsheet.
 
 ---
 
