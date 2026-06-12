@@ -309,6 +309,10 @@ A real-time trading monitor built with **Next.js 15** and deployed to Vercel. It
 | **P&L** | All closed trades with FIFO lot matching — realized P&L per trade |
 | **Returns** | Aggregated performance over time — daily, weekly, or monthly breakdowns |
 
+![Positions page — 20 open positions with market value and unrealized P&L](Screenshot%202026-06-12%20104252.png)
+
+![Returns tab — weekly realized P&L bar chart](Screenshot%202026-06-12%20104243.png)
+
 The **Returns tab** has an interactive SVG bar chart with four selectable metrics (Realized P&L, Win Rate, Average Return, Average Hold Days), three granularity modes (Daily / Weekly / Monthly), and five timeframe windows (30D / 90D / 6M / 1Y / All). Hovering a bar shows the exact period stats. Below the chart, a period breakdown table lists the last 20 periods with the same granularity toggle.
 
 **Architecture:**
