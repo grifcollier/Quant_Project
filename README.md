@@ -293,7 +293,7 @@ on:
     - cron: "30 20 * * 1-5"   # 4:30 PM EDT Mon-Fri
 ```
 
-The GitHub Action mirrors the production environment exactly, with Alpaca API keys injected via repository secrets. Trade monitoring and performance tracking moved from a Google Sheets journal to the custom Next.js dashboard (see below), which gives a cleaner real-time view of open positions, order history, and cumulative P&L without needing to maintain a separate spreadsheet.
+The GitHub Action mirrors the production environment exactly, with Alpaca API keys injected via repository secrets. Trade monitoring and performance tracking is handled by the custom Next.js dashboard (see below), which provides a real-time view of open positions, order history, and cumulative P&L.
 
 ---
 
