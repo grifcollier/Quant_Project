@@ -1,4 +1,4 @@
-# Quantitative Trading Platform
+﻿# Quantitative Trading Platform
 
 A full-stack algorithmic trading system I built from scratch in Python to explore quantitative strategies in practice — covering signal research, backtesting, walk-forward validation, Monte Carlo analysis, and automated live execution via Alpaca paper trading. Started as a curiosity, turned into something I'm genuinely proud of.
 
@@ -42,7 +42,7 @@ The flagship strategy is **ETF basket arbitrage** — a mean-reversion approach 
 | **Data** | yfinance (historical), Alpaca Markets (live), SEC EDGAR (ETF constituents) |
 | **Validation** | Walk-forward OOS testing, Monte Carlo bootstrap |
 | **Execution** | Alpaca paper trading — currently in live testing phase |
-| **Logging** | Automated trade journal to Google Sheets |
+| **Monitoring** | Live trading dashboard (Next.js + Vercel) — positions, P&L, returns |
 | **Charting** | Interactive Plotly dashboards (equity curves, spread z-scores, entry/exit markers) |
 
 ---
@@ -384,7 +384,6 @@ Quant_Project/
 │   │
 │   └── trading/
 │       ├── alpaca_trader.py      # Alpaca order placement
-│       ├── journal.py            # Google Sheets trade log
 │       └── rebalancer.py        # Position rebalancing
 │
 ├── scripts/
@@ -446,15 +445,13 @@ cd Quant_Project
 pip install -r requirements.txt
 ```
 
-**Environment variables** (for live trading and journaling):
+**Environment variables** (for live trading):
 
 ```bash
 ALPACA_API_KEY=...          # Alpaca live account key (market data)
 ALPACA_SECRET_KEY=...       # Alpaca live account secret
 ALPACA_PAPER_KEY=...        # Alpaca paper trading key (order placement)
 ALPACA_PAPER_SECRET=...     # Alpaca paper trading secret
-GOOGLE_SHEETS_CREDS=...     # Google service account JSON (base64)
-GOOGLE_SHEET_ID=...         # Target spreadsheet ID
 ```
 
 No API keys are needed for backtesting — historical data is fetched from yfinance and cached locally.
