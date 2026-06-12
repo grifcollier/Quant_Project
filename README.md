@@ -4,6 +4,8 @@ A full-stack algorithmic trading system I built from scratch in Python to explor
 
 **[Live interactive demo →  grifcollier-quant-project.streamlit.app](https://grifcollier-quant-project.streamlit.app)**
 
+**[Live paper trading dashboard → grifcollier-quant-project-2o6srbqeo-grifcolliers-projects.vercel.app](https://grifcollier-quant-project-2o6srbqeo-grifcolliers-projects.vercel.app)**
+
 ![Combined portfolio equity curve — 5 ETFs, 5y](docs/images/multi_portfolio_equity.png)
 
 The flagship strategy is **ETF basket arbitrage** — a mean-reversion approach that trades the spread between a sector ETF and a dynamically-updated basket of its top holdings, with historically correct constituent lists sourced directly from SEC EDGAR N-PORT filings to eliminate survivorship bias.
