@@ -1,6 +1,6 @@
 ﻿# Quantitative Trading Platform
 
-A full-stack algorithmic trading system I built from scratch in Python to explore quantitative strategies in practice — covering signal research, backtesting, walk-forward validation, Monte Carlo analysis, and automated live execution via Alpaca paper trading. Started as a curiosity, turned into something I'm genuinely proud of.
+A full-stack algorithmic trading system I built from scratch to explore quantitative strategies in practice — covering signal research, backtesting, walk-forward validation, Monte Carlo analysis, and automated live execution via Alpaca paper trading. The core platform is Python; a Next.js dashboard deployed to Vercel provides a public real-time view of the live trading. Started as a curiosity, turned into something I'm genuinely proud of.
 
 **[Live interactive demo →  grifcollier-quant-project.streamlit.app](https://grifcollier-quant-project.streamlit.app)**
 
@@ -283,7 +283,7 @@ An interactive web app built with Streamlit and deployed to Streamlit Community 
 
 The app has two modes:
 
-**Pre-computed tabs** — six tabs that load instantly from Plotly JSON figures committed to the repo, generated once with `python scripts/precompute_streamlit.py`. Covers the multi-basket portfolio, walk-forward validation, Monte Carlo analysis, a single-basket XLK drill-down, and Fama-French 5-factor analysis. A 5y / 10y toggle switches between pre-computed result sets.
+**Pre-computed tabs** — five tabs that load instantly from Plotly JSON figures committed to the repo, generated once with `python scripts/precompute_streamlit.py`. Covers the multi-basket portfolio, walk-forward validation, Monte Carlo analysis, a single-basket XLK drill-down, and Fama-French 5-factor analysis. A 5y / 10y toggle switches between pre-computed result sets.
 
 **Custom Run tab** — runs a live backtest against real data on the fly. Supports both single-ETF and multi-basket modes, adjustable z-score thresholds, and separate "Run Backtest" and "Run Walk-Forward Validation" buttons. Data is fetched from yfinance and EDGAR on first run (1–2 min), then cached.
 
@@ -369,6 +369,10 @@ dashboard/
 Quant_Project/
 │
 ├── run.py                        # Unified CLI entry point
+├── app.py                        # Streamlit app entry point
+│
+├── streamlit_app/
+│   └── precomputed/              # Pre-generated Plotly JSON figures (portfolio, WF, MC, XLK, FF5)
 │
 ├── src/
 │   ├── strategies/
