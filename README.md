@@ -27,6 +27,7 @@ The flagship strategy is **ETF basket arbitrage** — a mean-reversion approach 
 - [Other Strategies](#other-strategies)
 - [Live Trading (Alpaca Paper)](#live-trading-alpaca-paper)
 - [Streamlit App](#streamlit-app)
+- [Live Trading Dashboard](#live-trading-dashboard)
 - [Architecture](#architecture)
 - [CLI Reference](#cli-reference)
 - [Setup](#setup)
@@ -294,6 +295,53 @@ The app has two modes:
 
 ---
 
+## Live Trading Dashboard
+
+**[grifcollier-quant-project-2o6srbqeo-grifcolliers-projects.vercel.app](https://grifcollier-quant-project-2o6srbqeo-grifcolliers-projects.vercel.app)**
+
+A real-time trading monitor built with **Next.js 15** and deployed to Vercel. It reads live data directly from the Alpaca paper trading account and displays the current state of the portfolio — no manual updates, no pre-computed snapshots.
+
+| Tab | What it shows |
+|---|---|
+| **Overview** | Portfolio equity, buying power, open position value with unrealized P&L, today's P&L |
+| **Positions** | All open positions — qty, avg entry, current price, market value, unrealized return |
+| **Orders** | Full filled order history — side, fill price, notional value |
+| **P&L** | All closed trades with FIFO lot matching — realized P&L per trade |
+| **Returns** | Aggregated performance over time — daily, weekly, or monthly breakdowns |
+
+The **Returns tab** has an interactive SVG bar chart with four selectable metrics (Realized P&L, Win Rate, Average Return, Average Hold Days), three granularity modes (Daily / Weekly / Monthly), and five timeframe windows (30D / 90D / 6M / 1Y / All). Hovering a bar shows the exact period stats. Below the chart, a period breakdown table lists the last 20 periods with the same granularity toggle.
+
+**Architecture:**
+- Next.js App Router — server components fetch Alpaca data at request time (`force-dynamic`); the Returns chart is a `'use client'` component for interactivity
+- FIFO lot matching (`lib/trades.ts`) correctly handles Alpaca's fill activity format, which labels all closing sells the same regardless of whether the original position was long or short
+- All Alpaca API calls use `https://paper-api.alpaca.markets` with credentials injected at runtime; keys are never committed to the repo
+
+**Deployment:**
+- Hosted on Vercel with the root directory set to `dashboard/`
+- Auto-deploys on every `git push` to `main` — no manual deploy step
+- API credentials (`ALPACA_KEY`, `ALPACA_SECRET`) are stored as Vercel environment variables, not in the repo
+- `.env.local` is gitignored; the live deployment reads from Vercel's encrypted secret store
+
+```
+dashboard/
+├── app/
+│   ├── page.tsx                  # Overview
+│   ├── positions/page.tsx        # Positions
+│   ├── orders/page.tsx           # Orders
+│   ├── pnl/page.tsx              # P&L (closed trades)
+│   ├── returns/
+│   │   ├── page.tsx              # Returns (server — fetches + aggregates)
+│   │   └── ReturnsClient.tsx     # Interactive bar chart (client component)
+│   └── components/
+│       ├── NavLinks.tsx          # Navigation
+│       └── ui.tsx                # Shared UI primitives (StatCard, Table, etc.)
+└── lib/
+    ├── alpaca.ts                 # Alpaca API client + TypeScript interfaces
+    └── trades.ts                 # FIFO lot matching + period bucketing
+```
+
+---
+
 ## Architecture
 
 ```
@@ -332,6 +380,10 @@ Quant_Project/
 │
 ├── scripts/
 │   └── daily_trade.py            # Daily automation script
+│
+├── dashboard/                    # Next.js live trading dashboard (deployed to Vercel)
+│   ├── app/                      # App Router pages (Overview, Positions, Orders, P&L, Returns)
+│   └── lib/                      # Alpaca API client + FIFO trade matching
 │
 └── .github/workflows/
     └── daily_trade.yml           # GitHub Actions scheduler
