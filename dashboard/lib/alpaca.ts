@@ -71,7 +71,7 @@ export async function getActivities(): Promise<AlpacaActivity[]> {
   const all: AlpacaActivity[] = [];
   let pageToken: string | null = null;
   do {
-    const qs = pageToken
+    const qs: string = pageToken
       ? `activity_types=FILL&page_size=100&direction=desc&page_token=${encodeURIComponent(pageToken)}`
       : `activity_types=FILL&page_size=100&direction=desc`;
     const page = await get<AlpacaActivity[]>(`/v2/account/activities?${qs}`);
