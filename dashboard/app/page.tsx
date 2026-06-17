@@ -33,7 +33,7 @@ export default async function OverviewPage() {
         <StatCard
           label="Open Positions Value"
           value={positions.length > 0 ? fmt(totalMarketValue) : '—'}
-          sub={positions.length > 0 ? `${totalUpl >= 0 ? '+' : ''}${fmtSigned(totalUpl)} unrealized` : undefined}
+          sub={positions.length > 0 ? `${fmtSigned(totalUpl)} unrealized` : undefined}
           positive={positions.length > 0 ? totalUpl >= 0 : undefined}
         />
         <StatCard

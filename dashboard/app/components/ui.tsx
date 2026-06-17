@@ -122,7 +122,7 @@ export function fmtPct(v: string | number, alreadyPercent = false): string {
 export function fmtSigned(v: string | number): string {
   const n = typeof v === 'string' ? parseFloat(v) : v;
   if (isNaN(n)) return '—';
-  return `${n >= 0 ? '+' : ''}$${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${n >= 0 ? '+' : '-'}$${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export function colorSigned(v: number): string {
