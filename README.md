@@ -4,7 +4,7 @@ A full-stack algorithmic trading system I built from scratch to explore quantita
 
 **[Live interactive demo →  grifcollier-quant-project.streamlit.app](https://grifcollier-quant-project.streamlit.app)**
 
-**[Live paper trading dashboard → grifcollier-quant-project-2o6srbqeo-grifcolliers-projects.vercel.app](https://grifcollier-quant-project-2o6srbqeo-grifcolliers-projects.vercel.app)**
+**[Live paper trading dashboard → grifcollier-quant-project.vercel.app](https://grifcollier-quant-project.vercel.app)**
 
 ![Combined portfolio equity curve — 5 ETFs, 5y](docs/images/multi_portfolio_equity.png)
 
@@ -311,7 +311,7 @@ The GitHub Action mirrors the production environment exactly, with Alpaca API ke
 
 ## Live Trading Dashboard
 
-**[grifcollier-quant-project-2o6srbqeo-grifcolliers-projects.vercel.app](https://grifcollier-quant-project-2o6srbqeo-grifcolliers-projects.vercel.app)**
+**[grifcollier-quant-project.vercel.app](https://grifcollier-quant-project.vercel.app)**
 
 A real-time portfolio monitor built with **Next.js 15** and deployed to Vercel. Every page fetches live data directly from the Alpaca paper trading account on each request — no caching, no pre-computed snapshots, no manual refresh needed. The dashboard is publicly accessible so anyone can follow along with the live paper trading without needing an Alpaca account; API credentials are secured server-side and never exposed to the browser.
 
