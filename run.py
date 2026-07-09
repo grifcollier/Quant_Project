@@ -2104,24 +2104,44 @@ def _run_basket_diag(args):
             if not segs:
                 print(f"  WARNING: No EDGAR segments for {etf}. Skipping.")
                 continue
-            stocks = [s.replace("/", "-") for s in segs[-1][2]]
         except Exception as e:
             print(f"  ERROR resolving EDGAR constituents for {etf}: {e}")
             continue
 
-        print(f"  Constituents (latest segment): {stocks}")
-        prices = fetch_prices_bulk(stocks, period=period)
-        avail  = [s for s in stocks if s in prices]
-        if len(avail) < 2:
-            print(f"  Skipping — <2 stocks fetched.")
+        # Normalize share-class tickers (BRK/B -> BRK-B) for all segments up front
+        segs = [(ss, se, [s.replace("/", "-") for s in stx]) for ss, se, stx in segs]
+        print(f"  {len(segs)} segment(s): "
+              f"{segs[0][0].date()} -> {segs[-1][1].date()}")
+
+        # Fetch all unique tickers across all segments in one bulk call
+        all_stocks = sorted({s for _, _, stx in segs for s in stx})
+        prices = fetch_prices_bulk(all_stocks, period=period)
+
+        # Per-segment condition numbers, then concatenate (same pattern as _run_basket_dynamic)
+        seg_pieces = []
+        for s_start, s_end, stx in segs:
+            avail = [s for s in stx if s in prices]
+            if len(avail) < 2:
+                print(f"    Skipping segment {s_start.date()} — <2 stocks available.")
+                continue
+            cdf = pd.DataFrame({s: prices[s] for s in avail}).dropna()
+            ea  = etf_prices.reindex(cdf.index).dropna()
+            cdf = cdf.reindex(ea.index)
+            # Compute on full segment price history for proper warmup, then slice
+            full_cond = compute_rolling_condition_numbers(cdf, window=window)
+            seg_slice = full_cond.loc[s_start:s_end]
+            if seg_slice.notna().any():
+                seg_pieces.append(seg_slice)
+
+        if not seg_pieces:
+            print(f"  No condition number data for {etf}.")
             continue
 
-        cdf = pd.DataFrame({s: prices[s] for s in avail}).dropna()
-        ea  = etf_prices.reindex(cdf.index).dropna()
-        cdf = cdf.reindex(ea.index)
-
-        cond_nums = compute_rolling_condition_numbers(cdf, window=window)
+        cond_nums = pd.concat(seg_pieces).sort_index()
+        cond_nums = cond_nums[~cond_nums.index.duplicated(keep="first")]
         results[etf] = cond_nums
+        print(f"  Bars with condition number: {cond_nums.notna().sum()} "
+              f"(warmup NaN: {cond_nums.isna().sum()})")
 
     if not results:
         print("No data. Exiting.")
