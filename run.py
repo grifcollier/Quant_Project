@@ -768,7 +768,8 @@ def _run_basket_dynamic(args):
         cdf = cdf.reindex(ea.index)
 
         # Full-period rolling spread for proper warmup, then slice to the segment
-        full_spread = rolling_basket_spread(ea, cdf, window=window)
+        full_spread = rolling_basket_spread(ea, cdf, window=window,
+                                            ridge_threshold=getattr(args, "ridge_threshold", 0.0))
         sig_full, z_full = generate_basket_signals(
             full_spread, window=window,
             z_entry=args.z_entry, z_exit=args.z_exit, z_stop=args.z_stop,
@@ -840,6 +841,7 @@ def _run_basket_dynamic(args):
 
     if walk_forward:
         from src.backtest.metrics import compute_metrics as _cm
+        from src.analytics.stationarity import adf_test as _adf, compute_half_life as _hl
         from src.strategies.basket.viz import plot_walk_forward_results
         fold_bars = 252
         T = len(signals)
@@ -858,10 +860,15 @@ def _run_basket_dynamic(args):
                 capital=running_capital_wf, cost_bps=args.cost_bps,
                 n_stocks=top_n, max_hold_days=max_hold_days, vol_target=vol_target,
             )
+            spread_fold = spread.loc[fs:fe].dropna()
+            _adf_res    = _adf(spread_fold) if len(spread_fold) > 10 else {"p_value": float("nan")}
+            _hl_val     = _hl(spread_fold) if len(spread_fold) > 10 else float("nan")
             fold_results.append({
                 "fold": i + 1, "start": fs, "end": fe,
                 **{k: m[k] for k in ("n_trades", "total_return", "sharpe",
                                      "sortino", "max_drawdown", "win_rate")},
+                "spread_adf_pval": _adf_res["p_value"],
+                "spread_half_life": _hl_val,
             })
             all_fold_trades.append(t)
             equity_pieces_wf.append(eq)
@@ -869,7 +876,8 @@ def _run_basket_dynamic(args):
             print(f"  Fold {i+1} ({fs.date()} to {fe.date()}): "
                   f"{m['n_trades']} trades  |  "
                   f"{m['total_return']:.1%} return  |  "
-                  f"Sharpe {m['sharpe']:.2f}")
+                  f"Sharpe {m['sharpe']:.2f}  |  "
+                  f"ADF {_adf_res['p_value']:.3f}  HL {_hl_val:.0f}d")
 
         if not fold_results:
             print("Not enough data for walk-forward folds.")
@@ -1004,7 +1012,10 @@ def _run_basket(args):
     vol_target    = getattr(args, "vol_target",    0.0)
 
     print(f"Computing rolling basket spread (window={window})...")
-    spread = rolling_basket_spread(etf_aligned, constituent_prices, window=window)
+    spread = rolling_basket_spread(etf_aligned, constituent_prices, window=window,
+                                   ridge_alpha=getattr(args, "ridge_alpha", 0.0),
+                                   regime_filter=getattr(args, "regime_filter", 0.0),
+                                   ridge_threshold=getattr(args, "ridge_threshold", 0.0))
 
     adf = adf_test(spread.dropna())
     hl  = compute_half_life(spread.dropna())
@@ -1058,10 +1069,15 @@ def _run_basket(args):
                 capital=running_capital, cost_bps=args.cost_bps,
                 max_hold_days=max_hold_days, vol_target=vol_target,
             )
+            spread_fold = spread.loc[fs:fe].dropna()
+            _adf_res    = adf_test(spread_fold) if len(spread_fold) > 10 else {"p_value": float("nan")}
+            _hl_val     = compute_half_life(spread_fold) if len(spread_fold) > 10 else float("nan")
             fold_results.append({
                 "fold": i + 1, "start": fs, "end": fe,
                 **{k: m[k] for k in ("n_trades", "total_return", "sharpe", "sortino",
                                      "max_drawdown", "win_rate")},
+                "spread_adf_pval": _adf_res["p_value"],
+                "spread_half_life": _hl_val,
             })
             all_trades.append(t)
             equity_pieces.append(eq)
@@ -1069,7 +1085,8 @@ def _run_basket(args):
             print(f"  Fold {i+1} ({fs.date()} to {fe.date()}): "
                   f"{m['n_trades']} trades  |  "
                   f"{m['total_return']:.1%} return  |  "
-                  f"Sharpe {m['sharpe']:.2f}")
+                  f"Sharpe {m['sharpe']:.2f}  |  "
+                  f"ADF {_adf_res['p_value']:.3f}  HL {_hl_val:.0f}d")
 
         if not fold_results:
             print("Not enough data for walk-forward folds.")
@@ -1299,6 +1316,7 @@ def _run_basket_multi(args):
                 spread_full = rolling_basket_spread(
                     ea, cdf, window=window,
                     ridge_alpha=args.ridge_alpha, regime_filter=args.regime_filter,
+                    ridge_threshold=args.ridge_threshold,
                 )
                 signals_full, _ = generate_basket_signals(
                     spread_full, window=window,
@@ -1569,6 +1587,7 @@ def _run_basket_multi(args):
             etf_aligned, constituent_prices, window=window,
             ridge_alpha=args.ridge_alpha,
             regime_filter=args.regime_filter,
+            ridge_threshold=args.ridge_threshold,
         )
 
         # ADF on training-only portion for stationarity report
@@ -1869,6 +1888,11 @@ def _register_basket_multi(subparsers):
                         dest="ridge_alpha",
                         help="Ridge (L2) regularisation for OLS basket fit (default: 0 = off). "
                              "Reduces overfitting when n_stocks/window is high. Try 0.05–0.20.")
+    parser.add_argument("--ridge-threshold", default=0.0, type=float, metavar="T",
+                        dest="ridge_threshold",
+                        help="Dynamic ridge: condition-number threshold above which per-window "
+                             "ridge switching is activated (default: 0 = off). "
+                             "Overrides --ridge-alpha when set. Recommended: 20.")
     parser.add_argument("--regime-filter", default=0.0, type=float, metavar="T",
                         dest="regime_filter",
                         help="Suppress spread when normalised OLS coefficient shift exceeds T "
@@ -1946,6 +1970,18 @@ def _register_basket(subparsers):
                         help="Run Monte Carlo bootstrap on trade P&L after backtest.")
     parser.add_argument("--mc-sims", default=10_000, type=int, dest="mc_sims",
                         help="Number of Monte Carlo simulations (default: 5000).")
+    parser.add_argument("--ridge-threshold", default=0.0, type=float, metavar="T",
+                        dest="ridge_threshold",
+                        help="Dynamic ridge: condition-number threshold above which per-window "
+                             "ridge switching is activated (default: 0 = off). Recommended: 20.")
+    parser.add_argument("--ridge-alpha", default=0.0, type=float, metavar="A",
+                        dest="ridge_alpha",
+                        help="Fixed Ridge (L2) regularisation strength (default: 0 = off). "
+                             "Ignored when --ridge-threshold is set.")
+    parser.add_argument("--regime-filter", default=0.0, type=float, metavar="T",
+                        dest="regime_filter",
+                        help="Suppress spread when normalised OLS coefficient shift exceeds T "
+                             "(default: 0 = off). Try 0.20–0.50.")
     parser.add_argument("--save-images", default=None, metavar="DIR", dest="save_images",
                         help="Export all figures as PNG files to DIR (requires kaleido).")
     parser.add_argument("--save-figs", default=None, metavar="DIR", dest="save_figs",
@@ -2036,6 +2072,109 @@ def _run_basket_history(args):
             print(f"  Consider using --stocks with the earliest-period constituents:")
             earliest_top = earliest["constituents"][:top_n] if top_n else earliest["constituents"]
             print(f"  {' '.join(earliest_top)}")
+
+
+def _run_basket_diag(args):
+    """Rolling condition number diagnostic across ETF basket constituents."""
+    import plotly.graph_objects as go
+    from src.data.fetcher import fetch_price, fetch_prices_bulk
+    from src.data.edgar import get_constituent_segments
+    from src.analytics.collinearity import compute_rolling_condition_numbers
+
+    period = args.period
+    window = args.window
+    top_n  = getattr(args, "top_n", 5)
+    etfs   = [e.upper() for e in args.etfs] if args.etfs else ["XLK", "XLF", "XLV", "XLI", "XLE"]
+
+    period_years = {"1y": 1, "2y": 2, "3y": 3, "5y": 5}.get(period, 5)
+    full_end   = pd.Timestamp.today().normalize()
+    full_start = full_end - pd.DateOffset(years=period_years)
+
+    results = {}
+    for etf in etfs:
+        print(f"\nProcessing {etf}...")
+        try:
+            etf_prices = fetch_price(etf, period=period)
+        except Exception as e:
+            print(f"  ERROR fetching {etf}: {e}")
+            continue
+
+        try:
+            segs = get_constituent_segments(etf, full_start, full_end, top_n=top_n)
+            if not segs:
+                print(f"  WARNING: No EDGAR segments for {etf}. Skipping.")
+                continue
+            stocks = [s.replace("/", "-") for s in segs[-1][2]]
+        except Exception as e:
+            print(f"  ERROR resolving EDGAR constituents for {etf}: {e}")
+            continue
+
+        print(f"  Constituents (latest segment): {stocks}")
+        prices = fetch_prices_bulk(stocks, period=period)
+        avail  = [s for s in stocks if s in prices]
+        if len(avail) < 2:
+            print(f"  Skipping — <2 stocks fetched.")
+            continue
+
+        cdf = pd.DataFrame({s: prices[s] for s in avail}).dropna()
+        ea  = etf_prices.reindex(cdf.index).dropna()
+        cdf = cdf.reindex(ea.index)
+
+        cond_nums = compute_rolling_condition_numbers(cdf, window=window)
+        results[etf] = cond_nums
+
+    if not results:
+        print("No data. Exiting.")
+        return
+
+    # Summary table
+    print(f"\n{'='*62}")
+    print(f"{'ETF':<6}  {'Mean':>7}  {'p50':>7}  {'p95':>7}  {'Max':>8}  {'Bars>20':>8}")
+    print(f"{'-'*6}  {'-'*7}  {'-'*7}  {'-'*7}  {'-'*8}  {'-'*8}")
+    for etf, cn in results.items():
+        valid = cn.dropna()
+        if valid.empty:
+            continue
+        pct_above = (valid > 20).mean()
+        print(f"{etf:<6}  {valid.mean():>7.1f}  {valid.median():>7.1f}  "
+              f"{valid.quantile(0.95):>7.1f}  {valid.max():>8.1f}  {pct_above:>7.1%}")
+
+    # Plotly chart
+    fig = go.Figure()
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+    for (etf, cn), color in zip(results.items(), colors):
+        fig.add_trace(go.Scatter(
+            x=cn.index, y=cn.values,
+            mode="lines", name=etf, line=dict(color=color), opacity=0.85,
+        ))
+    fig.add_hline(y=20, line_dash="dash", line_color="red",
+                  annotation_text="threshold=20", annotation_position="bottom right")
+    fig.update_layout(
+        title=f"Rolling Condition Number — Basket Constituents (window={window}d, {period})",
+        xaxis_title="Date",
+        yaxis_title="Condition Number",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    _show(fig, f"basket_diag_condition_numbers_{period}_{window}d")
+
+
+def _register_basket_diag(subparsers):
+    parser = subparsers.add_parser(
+        "basket-diag",
+        help="Rolling collinearity diagnostic (condition number) across ETF baskets",
+    )
+    parser.add_argument(
+        "etfs", nargs="*", metavar="ETF",
+        help="ETF ticker(s) to analyse (default: XLK XLF XLV XLI XLE)",
+    )
+    parser.add_argument("--period", default="5y", choices=["1y", "2y", "3y", "5y"],
+                        help="Data lookback (default: 5y)")
+    parser.add_argument("--window", default=60, type=int,
+                        help="Rolling condition-number window in days (default: 60)")
+    parser.add_argument("--top-n", default=5, type=int, dest="top_n", metavar="N",
+                        help="Top-N EDGAR holdings per ETF (default: 5)")
+    parser.set_defaults(func=_run_basket_diag)
 
 
 def _register_basket_history(subparsers):
@@ -2941,6 +3080,7 @@ def main():
     _register_pca(subparsers)
     _register_basket(subparsers)
     _register_basket_multi(subparsers)
+    _register_basket_diag(subparsers)
     _register_basket_history(subparsers)
     _register_cta(subparsers)
     _register_portfolio(subparsers)

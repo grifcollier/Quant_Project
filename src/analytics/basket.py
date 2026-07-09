@@ -26,13 +26,18 @@ def fit_basket(
     return coefficients, intercept, spread
 
 
+_RIDGE_GRID = (0.1, 1.0, 10.0)
+
+
 def rolling_basket_spread(
     etf_prices: pd.Series,
     constituent_prices: pd.DataFrame,
     window: int,
     ridge_alpha: float = 0.0,
     regime_filter: float = 0.0,
-) -> pd.Series:
+    ridge_threshold: float = 0.0,
+    return_diagnostics: bool = False,
+) -> "pd.Series | tuple":
     """
     Rolling out-of-sample basket spread.
 
@@ -42,23 +47,30 @@ def rolling_basket_spread(
 
     Parameters
     ----------
-    ridge_alpha    : L2 regularisation strength (0 = plain OLS).
-                     Penalises large constituent weights, reducing overfitting
-                     when n_params/n_obs is high (e.g. 13 stocks, 60-bar window).
-                     A value of 0.05–0.20 is a reasonable starting point.
-    regime_filter  : If > 0, suppress the spread (set to NaN) whenever the
-                     normalised L2 change in OLS coefficients from the previous
-                     bar exceeds this threshold.  Detects structural breaks where
-                     the basket relationship has genuinely shifted rather than
-                     temporarily deviated.  Try 0.20–0.50.
+    ridge_alpha     : Fixed L2 regularisation strength (0 = plain OLS).
+                      Ignored when ridge_threshold > 0 (dynamic mode takes over).
+    regime_filter   : If > 0, suppress the spread (set to NaN) whenever the
+                      normalised L2 change in OLS coefficients from the previous
+                      bar exceeds this threshold.  Try 0.20–0.50.
+    ridge_threshold : If > 0, enables per-window dynamic ridge switching.
+                      At each bar the condition number of the return correlation
+                      matrix is computed; if it exceeds this threshold, the
+                      smallest alpha from {0.1, 1.0, 10.0} that brings the
+                      condition number below the threshold is used (capped at
+                      10.0 if none suffice). When 0 (default), behaviour is
+                      identical to the original implementation.
+    return_diagnostics : If True, return (spread, cond_num_series) instead of
+                         just spread. cond_num_series contains the raw condition
+                         number at each bar (NaN for warmup and plain-OLS bars).
 
     Returns
     -------
-    pd.Series with same index as etf_prices. Rows 0..window-1 are NaN.
-    Bars suppressed by the regime filter are also NaN.
+    pd.Series with same index as etf_prices (rows 0..window-1 are NaN), or
+    (spread, cond_num_series) when return_diagnostics=True.
     """
     n = len(etf_prices)
-    values = np.full(n, np.nan)
+    values    = np.full(n, np.nan)
+    cond_nums = np.full(n, np.nan)  # populated only when ridge_threshold > 0
 
     y_all = np.log(etf_prices.values).astype(float)
     X_all = np.log(constituent_prices.values).astype(float)
@@ -70,12 +82,34 @@ def rolling_basket_spread(
         X_train = X_all[t - window : t]
         X_aug   = np.column_stack([np.ones(window), X_train])
 
-        if ridge_alpha > 0:
+        # Determine effective ridge_alpha for this bar
+        eff_alpha = ridge_alpha
+        if ridge_threshold > 0:
+            ret_window = np.diff(X_train, axis=0)           # log-returns: (window-1, n_stocks)
+            if ret_window.shape[0] >= 2:
+                corr    = np.corrcoef(ret_window.T)
+                eigvals = np.linalg.eigvalsh(corr)
+                min_eig = eigvals[0]
+                cond    = eigvals[-1] / min_eig if min_eig > 0 else np.inf
+                cond_nums[t] = cond
+                if cond > ridge_threshold:
+                    # Find smallest grid alpha that brings X_train'X_train condition
+                    # number below threshold; cap at grid maximum if none suffice.
+                    XtX_s = X_train.T @ X_train
+                    scale_s = np.trace(XtX_s) / X_train.shape[1]
+                    eff_alpha = _RIDGE_GRID[-1]             # default: cap
+                    for a in _RIDGE_GRID:
+                        A_s = XtX_s + a * scale_s * np.eye(X_train.shape[1])
+                        ev  = np.linalg.eigvalsh(A_s)
+                        if ev[0] > 0 and ev[-1] / ev[0] <= ridge_threshold:
+                            eff_alpha = a
+                            break
+
+        if eff_alpha > 0:
             XtX   = X_aug.T @ X_aug
-            # Scale penalty by mean diagonal so alpha is unit-invariant
             scale = np.trace(XtX) / X_aug.shape[1]
-            A     = XtX + ridge_alpha * scale * np.eye(X_aug.shape[1])
-            A[0, 0] -= ridge_alpha * scale  # don't penalise intercept
+            A     = XtX + eff_alpha * scale * np.eye(X_aug.shape[1])
+            A[0, 0] -= eff_alpha * scale
             coeffs = np.linalg.solve(A, X_aug.T @ y_train)
         else:
             coeffs, _, _, _ = np.linalg.lstsq(X_aug, y_train, rcond=None)
@@ -94,4 +128,8 @@ def rolling_basket_spread(
         prev_coefs = curr_coefs
         values[t]  = y_all[t] - (X_all[t] @ curr_coefs + float(coeffs[0]))
 
-    return pd.Series(values, index=etf_prices.index, name="basket_spread")
+    spread = pd.Series(values, index=etf_prices.index, name="basket_spread")
+    if return_diagnostics:
+        cond_series = pd.Series(cond_nums, index=etf_prices.index, name="condition_number")
+        return spread, cond_series
+    return spread
