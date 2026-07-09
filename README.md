@@ -64,6 +64,15 @@ Even after fixing the survivorship bias, the Sharpe numbers came back high enoug
 **Fama-French 5-factor analysis for alpha verification**
 High Sharpe ratios can be misleading — a strategy might just be quietly loading up on a known risk premium (market beta, value tilt, etc.) and getting paid for systematic exposure rather than genuine edge. FF5 regression quantifies exactly how much of the portfolio's return comes from each systematic factor versus unexplained alpha. For a market-neutral spread strategy, the expected result is near-zero factor loadings and a positive alpha — and that's what the numbers show.
 
+**Coefficient floor and survivor guard (shipped)**
+The live trader was applying `abs()` to the OLS coefficients when sizing the basket leg, which silently bought stocks the regression had actually assigned a *negative* weight. I fixed it to floor negative coefficients to zero and drop those names from sizing, and added a guard that skips the trade entirely if fewer than 3 of the 5 basket stocks keep a positive weight. Backtesting confirmed the guard costs zero historical trades for XLK and just one for XLF (a favorable outlier), with negligible impact on Sharpe or drawdown.
+
+**Ridge regularization (tested, rejected)**
+Collinear baskets like XLE and XLF occasionally produce unstable OLS coefficients, so I tested ridge regularization as a fix. Walk-forward validation showed ridge did stabilize the coefficients, but it broke spread stationarity in most folds where it activated and degraded Sharpe and drawdown everywhere it engaged — the instability was cosmetic, not a real signal problem. It's implemented but off by default.
+
+**Market-beta hedge overlay (tested, mostly rejected)**
+The ETF and its basket rarely have identical market beta, so I tested a SPY overlay to neutralize the residual exposure. Walk-forward across all five ETFs showed it doesn't reliably improve Sharpe or cap drawdown for XLK/XLI/XLF/XLE — those baskets are already close to beta-neutral, so there's little real exposure to hedge — with one exception: XLV, whose defensive holdings give it a persistent structural net-long beta that the hedge consistently helped. It ships as an opt-in diagnostic (`--beta-hedge`), worth enabling only for XLV.
+
 **Alpaca paper trading**
 After validating the strategy through backtesting and Monte Carlo analysis, I wanted to go a step further and test it in a live market environment. I integrated Alpaca's paper trading API to run the strategy in real time, with a GitHub Actions workflow executing automatically after market close each day. This surfaces the kind of edge cases that backtests never encounter — stale data, corporate actions, API outages — and forces every signal to be generated systematically with no discretionary override.
 

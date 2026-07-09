@@ -229,7 +229,11 @@ def _parse_nport_xml(xml_text: str) -> list[dict]:
     """
     Parse one N-PORT XML filing and return equity holdings.
 
-    Each entry: {ticker: str, cusip: str, name: str, pct_val: float}
+    Each entry: {ticker: str, cusip: str, name: str, pct_val: float,
+                 shares: float, val_usd: float}
+    `shares` is the N-PORT <balance> quantity (units="NS") and `val_usd` is <valUSD>
+    (market value at the filing's report date); both default to 0.0 when the
+    filing omits or malforms them.
     Only long equity positions (assetCat in EC/EF) are included.
     Ticker may be empty string if not present in the filing — callers
     that need tickers should run resolve_cusips() on the returned cusips.
@@ -271,11 +275,26 @@ def _parse_nport_xml(xml_text: str) -> list[dict]:
         except ValueError:
             pct = 0.0
 
+        # N-PORT <balance> holds the position size; <units>=="NS" means it is a
+        # number of shares (vs. principal amount for debt). We only reach here
+        # for EC/EF equity, so balance is a share count.
+        try:
+            shares = float(fields.get("balance", 0))
+        except ValueError:
+            shares = 0.0
+
+        try:
+            val_usd = float(fields.get("valUSD", 0))
+        except ValueError:
+            val_usd = 0.0
+
         holdings.append({
             "ticker":  ticker,
             "cusip":   cusip,
             "name":    fields.get("name", ""),
             "pct_val": pct,
+            "shares":  shares,
+            "val_usd": val_usd,
         })
 
     holdings.sort(key=lambda x: x["pct_val"], reverse=True)
@@ -407,8 +426,10 @@ def _fetch_holdings_cached(cik: int, accession: str, primary_doc: str) -> list[d
 
     if cache_file.exists():
         cached = json.loads(cache_file.read_text())
-        # Re-resolve if any entries still have no ticker (legacy cache)
-        if cached and all(h.get("ticker") for h in cached):
+        # Re-fetch legacy caches that predate a schema change: entries missing a
+        # ticker (CUSIP never resolved) or lacking the "shares" key (cached
+        # before N-PORT balHold/valUSD were parsed) trigger a one-time refresh.
+        if cached and all(h.get("ticker") and "shares" in h for h in cached):
             return cached
 
     url = f"{_ARC_BASE}/{cik}/{acc_nd}/primary_doc.xml"
@@ -444,17 +465,21 @@ def build_constituent_history(
     end_date: str,
     top_n: Optional[int] = None,
     min_pct: float = 0.0,
+    include_shares: bool = False,
 ) -> pd.DataFrame:
     """
     Fetch quarterly N-PORT constituent history for an ETF.
 
     Parameters
     ----------
-    ticker     : ETF ticker (e.g. "XLF").
-    start_date : ISO date string — fetches one quarter prior for warm-up.
-    end_date   : ISO date string.
-    top_n      : Keep only the top-N holdings by weight (None = all).
-    min_pct    : Minimum portfolio weight % to include (default 0 = all).
+    ticker         : ETF ticker (e.g. "XLF").
+    start_date     : ISO date string — fetches one quarter prior for warm-up.
+    end_date       : ISO date string.
+    top_n          : Keep only the top-N holdings by weight (None = all).
+    min_pct        : Minimum portfolio weight % to include (default 0 = all).
+    include_shares : If True, add a `shares` column of N-PORT <balHold> share
+                     counts (same order as `constituents`). Off by default so
+                     the traded-basket path is unchanged.
 
     Returns
     -------
@@ -462,6 +487,8 @@ def build_constituent_history(
         filing_date  : pd.Timestamp  (N-PORT report date, roughly monthly)
         constituents : list[str]     (tickers sorted by weight descending)
         weights      : list[float]   (portfolio % weights, same order)
+        shares       : list[float]   (share counts, same order) — only when
+                       include_shares=True
 
     Notes
     -----
@@ -503,11 +530,14 @@ def build_constituent_history(
             holdings = holdings[:top_n]
 
         if holdings:
-            rows.append({
+            entry = {
                 "filing_date":  row["filing_date"],
                 "constituents": [h["ticker"] for h in holdings],
                 "weights":      [h["pct_val"]  for h in holdings],
-            })
+            }
+            if include_shares:
+                entry["shares"] = [h.get("shares", 0.0) for h in holdings]
+            rows.append(entry)
 
     print(f"  {ticker}: {len(rows)} N-PORT filings fetched ({start_date} to {end_date})      ")
     if not rows:

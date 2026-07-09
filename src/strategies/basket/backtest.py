@@ -47,14 +47,16 @@ def run_basket_backtest(
     else:
         spread_vol_series = None
 
-    trades   = []
-    open_pos = None
+    trades     = []
+    open_pos   = None
+    last_valid = None  # (date, spread) of the most recent non-NaN bar seen
 
     for date, row in signals_df.iterrows():
         sig = row["signal"]
         s   = spread.get(date, np.nan)
         if np.isnan(s):
             continue
+        last_valid = (date, s)
 
         if open_pos is not None:
             # Time stop: force-exit if held too long
@@ -100,6 +102,28 @@ def run_basket_backtest(
                 "entry_spread": s,
                 "notional":     trade_notional,
             }
+
+    # Force-close any position still open at the end of the window (e.g. an
+    # EDGAR constituent segment boundary) instead of silently dropping it --
+    # mark it to the last valid spread bar and charge the normal exit cost.
+    if open_pos is not None and last_valid is not None:
+        date, s = last_valid
+        trade_notional = open_pos["notional"]
+        gross = open_pos["direction"] * (s - open_pos["entry_spread"]) * trade_notional
+        cost  = trade_notional * cost_rate
+        pnl   = round(gross - cost, 4)
+        trades.append({
+            "entry_date":   open_pos["entry_date"],
+            "exit_date":    date,
+            "exit_type":    "data_end",
+            "direction":    open_pos["direction"],
+            "entry_spread": open_pos["entry_spread"],
+            "exit_spread":  s,
+            "notional":     trade_notional,
+            "pnl":          pnl,
+            "pnl_pct":      round(pnl / capital, 6),
+        })
+        open_pos = None
 
     if not trades:
         eq = pd.DataFrame(
