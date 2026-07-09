@@ -80,6 +80,10 @@ def rolling_basket_spread(
     for t in range(window, n):
         y_train = y_all[t - window : t]
         X_train = X_all[t - window : t]
+
+        if np.isnan(y_train).any() or np.isnan(X_train).any():
+            continue  # values[t] stays NaN — upstream filtering missed a gap
+
         X_aug   = np.column_stack([np.ones(window), X_train])
 
         # Determine effective ridge_alpha for this bar
