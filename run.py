@@ -2608,7 +2608,8 @@ def _run_trade_basket(args, acct, capital, execute=False):
 
     # Current OLS weights fitted on the most recent window
     coefs, _, _ = fit_basket(etf_aligned.iloc[-window:], constituent_df.iloc[-window:])
-    coef_sum = sum(abs(c) for c in coefs)
+    coefs_floored = [max(0.0, c) for c in coefs]
+    coef_sum = sum(coefs_floored)
 
     if vol_target > 0:
         import math as _math
@@ -2625,8 +2626,9 @@ def _run_trade_basket(args, acct, capital, execute=False):
 
     etf_notional = half_notional
     stock_notionals = {
-        s: (abs(coefs[i]) / coef_sum) * half_notional
+        s: (coefs_floored[i] / coef_sum) * half_notional
         for i, s in enumerate(stocks)
+        if coefs_floored[i] > 0
     }
 
     # Detect current position from Alpaca
@@ -2720,7 +2722,9 @@ def _run_trade_basket(args, acct, capital, execute=False):
                     print(f"  VIX check failed: {exc}")
 
             if not vix_blocked:
-                if current_z > z_entry:
+                if len(stock_notionals) < 3:
+                    print(f"Signal:    BLOCKED ({len(stock_notionals)} stocks survive OLS floor, need >= 3)")
+                elif current_z > z_entry:
                     print(f"Signal:    SHORT SPREAD (ETF expensive)")
                     # ETF short requires whole shares — fractional short-sell is not supported
                     orders.append({"symbol": etf, "side": OrderSide.SELL, "qty": etf_shares,
