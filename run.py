@@ -686,6 +686,128 @@ def _register_pca(subparsers):
     parser.set_defaults(func=_run_pca)
 
 
+def _build_hedge_data(etf, etf_prices, period):
+    """
+    Build the hedge basket over the full period once: fetch SPY, resolve the
+    top-10 N-PORT holdings with share counts, mark-to-market daily with hysteresis
+    membership, and compute the daily net_beta. Causal and separate from the traded
+    basket. Returns (spy_prices, net_beta_df) or None on failure.
+    """
+    from src.data.fetcher import fetch_price, fetch_prices_bulk
+    from src.data.edgar import build_constituent_history
+    from src.strategies.basket.hedge import hedge_membership, hedge_weights, compute_net_beta
+
+    start, end = etf_prices.index[0], etf_prices.index[-1]
+    try:
+        spy = fetch_price("SPY", period=period)
+        hist10 = build_constituent_history(
+            etf, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"),
+            top_n=10, include_shares=True)
+        if hist10.empty:
+            print("  No N-PORT history for hedge basket — skipping hedge.")
+            return None
+        hist10 = hist10.copy()
+        hist10["constituents"] = hist10["constituents"].apply(
+            lambda lst: [t.replace("/", "-") for t in lst])
+        pool = sorted({t for row in hist10["constituents"] for t in row})
+        pool_px = fetch_prices_bulk(pool, period=period)
+        px = pd.DataFrame({t: pool_px[t] for t in pool if t in pool_px}).dropna(how="all")
+        mem = hedge_membership(hist10, px, x_pp=0.3, n_days=3)
+        wts = hedge_weights(mem, hist10, px)
+        nb  = compute_net_beta(etf_prices, px, spy, mem, wts)
+        return spy, nb
+    except Exception as e:
+        print(f"  Beta-hedge setup failed ({e}) — skipping hedge.")
+        return None
+
+
+def _build_traded_hedge_data(etf, etf_prices, segments, traded_prices, window, period):
+    """
+    Like _build_hedge_data but net_beta comes from the ACTUAL traded OLS basket
+    (rolling fit_basket coefficients) rather than the N-PORT proxy. Returns
+    (spy_prices, net_beta_df) or None on failure.
+    """
+    from src.data.fetcher import fetch_price
+    from src.strategies.basket.hedge import compute_traded_net_beta
+    try:
+        spy = fetch_price("SPY", period=period)
+        nb = compute_traded_net_beta(segments, etf_prices, traded_prices, spy, window=window)
+        if nb.empty:
+            print("  No traded-basket net_beta — skipping hedge.")
+            return None
+        return spy, nb
+    except Exception as e:
+        print(f"  Traded-basis beta-hedge setup failed ({e}) — skipping hedge.")
+        return None
+
+
+def _build_hedge_net_beta(args, etf, etf_prices, segments, traded_prices, window, period):
+    """Dispatch hedge net_beta build by --hedge-basis (proxy | traded)."""
+    basis = getattr(args, "hedge_basis", "proxy")
+    if basis == "traded":
+        print(f"  Hedge basis: traded OLS basket (rolling fit_basket coefficients).")
+        return _build_traded_hedge_data(etf, etf_prices, segments, traded_prices, window, period)
+    print(f"  Hedge basis: N-PORT proxy basket (top-10 + hysteresis).")
+    return _build_hedge_data(etf, etf_prices, period)
+
+
+def _beta_hedge_report(args, etf, etf_prices, trades, equity_curve, capital, period,
+                       segments=None, traded_prices=None, window=60):
+    """
+    Beta-hedge overlay (Phase 5): print the unhedged vs shares-static vs
+    shares-dynamic comparison and return the result dict for the selected
+    --hedge-mode (or None when --beta-hedge != 'shares' or there are no trades).
+
+    Strictly additive — does not touch the unhedged backtest, spread, OLS fit, or
+    sizing. The hedge basket (top-10 N-PORT + hysteresis) is separate from the
+    traded basket. Correlation is reported on open-position days (the meaningful
+    window); the whole-period correlation is diluted by flat days.
+    """
+    if getattr(args, "beta_hedge", "none") != "shares" or trades.empty:
+        return None
+
+    from src.strategies.basket.hedge import apply_beta_hedge
+    from src.backtest.metrics import compute_metrics as _cm
+
+    print("\nBeta-hedge overlay (SPY shares) — building hedge basket...")
+    hedge_data = _build_hedge_net_beta(args, etf, etf_prices, segments, traded_prices,
+                                       window, period)
+    if hedge_data is None:
+        return None
+    spy, nb = hedge_data
+
+    open_mask = pd.Series(False, index=equity_curve.index)
+    for _, tr in trades.iterrows():
+        open_mask[(equity_curve.index > tr["entry_date"]) &
+                  (equity_curve.index <= tr["exit_date"])] = True
+
+    def _row(tag, eq, cost):
+        m     = _cm(eq, trades, capital)
+        daily = eq["equity"].diff().dropna()
+        spy_r = spy.pct_change().reindex(daily.index).fillna(0.0)
+        om    = open_mask.reindex(daily.index).fillna(False)
+        corr  = daily[om].corr(spy_r[om]) if om.any() else float("nan")
+        print(f"    {tag:14} Sharpe={m['sharpe']:+.2f}  ret={m['total_return']:+7.1%}  "
+              f"maxDD={m['max_drawdown']:6.1%}  SPYcorr(open)={corr:+.3f}  "
+              f"hedgeCost=${cost:,.0f}")
+
+    print("  Comparison (SPY-correlation measured on open-position days):")
+    _row("unhedged", equity_curve, 0.0)
+    results = {}
+    for mode in ("static", "dynamic"):
+        res = apply_beta_hedge(trades, equity_curve, spy, nb, capital, mode=mode)
+        _row(f"shares-{mode}", res["hedged_equity"], res["total_hedge_cost"])
+        results[mode] = res
+
+    hedged = nb["hedged"]
+    if hedged.any():
+        print(f"  net_beta: {int(hedged.sum())}/{len(nb)} days warmed, "
+              f"mean={nb.loc[hedged, 'net_beta'].mean():+.3f}, "
+              f"|net_beta|<0.25 on {(nb.loc[hedged, 'net_beta'].abs() < 0.25).mean():.0%} of days "
+              f"— hedge is small when the spread is already near market-neutral.")
+    return results.get(getattr(args, "hedge_mode", "static"))
+
+
 def _run_basket_dynamic(args):
     """
     Basket backtest with time-varying constituents from EDGAR N-PORT.
@@ -843,10 +965,23 @@ def _run_basket_dynamic(args):
         from src.backtest.metrics import compute_metrics as _cm
         from src.analytics.stationarity import adf_test as _adf, compute_half_life as _hl
         from src.strategies.basket.viz import plot_walk_forward_results
+        from src.strategies.basket.hedge import apply_beta_hedge
         fold_bars = 252
         T = len(signals)
         fold_results, all_fold_trades, equity_pieces_wf = [], [], []
         running_capital_wf = capital
+
+        # Build the hedge basket once over the full period; slice per fold below.
+        # net_beta is causal (trailing betas), so a full-period build then fold
+        # slicing introduces no look-ahead.
+        hedge_mode = getattr(args, "hedge_mode", "static")
+        wf_hedge = None
+        if getattr(args, "beta_hedge", "none") == "shares":
+            print("\nBeta-hedge overlay (walk-forward) — building hedge basket...")
+            wf_hedge = _build_hedge_net_beta(args, etf, etf_prices, segments, prices,
+                                             window, period)
+        hedge_daily_pieces = []
+        NB_SPIKE = 0.25   # |net_beta| above this flags a fold where the hedge may matter
 
         for i in range(walk_forward):
             start_idx = T - (walk_forward - i) * fold_bars
@@ -863,13 +998,34 @@ def _run_basket_dynamic(args):
             spread_fold = spread.loc[fs:fe].dropna()
             _adf_res    = _adf(spread_fold) if len(spread_fold) > 10 else {"p_value": float("nan")}
             _hl_val     = _hl(spread_fold) if len(spread_fold) > 10 else float("nan")
-            fold_results.append({
+            fold_rec = {
                 "fold": i + 1, "start": fs, "end": fe,
                 **{k: m[k] for k in ("n_trades", "total_return", "sharpe",
                                      "sortino", "max_drawdown", "win_rate")},
                 "spread_adf_pval": _adf_res["p_value"],
                 "spread_half_life": _hl_val,
-            })
+            }
+
+            # Per-fold beta hedge on this fold's own trades/equity/capital
+            if wf_hedge is not None and not t.empty:
+                spy, nb = wf_hedge
+                res = apply_beta_hedge(t, eq, spy, nb, capital=running_capital_wf,
+                                       mode=hedge_mode)
+                hm = _cm(res["hedged_equity"], t, running_capital_wf)
+                nb_f = nb.loc[fs:fe]
+                nb_h = nb_f.loc[nb_f["hedged"], "net_beta"]
+                fold_rec.update({
+                    "h_sharpe":  hm["sharpe"],
+                    "h_max_dd":  hm["max_drawdown"],
+                    "h_ret":     hm["total_return"],
+                    "h_cost":    res["total_hedge_cost"],
+                    "nb_mean":   float(nb_h.mean())      if not nb_h.empty else float("nan"),
+                    "nb_tail":   float(nb_h.abs().max()) if not nb_h.empty else float("nan"),
+                    "nb_spike":  bool(not nb_h.empty and nb_h.abs().max() > NB_SPIKE),
+                })
+                hedge_daily_pieces.append(res["daily_hedge"])
+
+            fold_results.append(fold_rec)
             all_fold_trades.append(t)
             equity_pieces_wf.append(eq)
             running_capital_wf = float(eq["equity"].iloc[-1])
@@ -896,12 +1052,51 @@ def _run_basket_dynamic(args):
               f"{n_total} total trades  |  "
               f"{mean_ret:.1%} avg fold return  |  "
               f"Sharpe {mean_sharpe:.2f} avg")
+
+        # Per-fold hedged-vs-unhedged comparison (does the 'immaterial' finding
+        # hold in every fold, or does a stress fold show a net_beta spike?)
+        if wf_hedge is not None:
+            print(f"\n  Per-fold beta hedge ({hedge_mode}) — unhedged vs hedged, "
+                  f"net_beta stats (tail = max |net_beta|, * = spike > {NB_SPIKE}):")
+            print(f"    {'Fold':<5}{'Period':<24}{'Shrp(u)':>8}{'Shrp(h)':>8}"
+                  f"{'DD(u)':>8}{'DD(h)':>8}{'meanNB':>8}{'tailNB':>8}{'cost':>8}")
+            for r in fold_results:
+                if "h_sharpe" not in r:
+                    print(f"    {r['fold']:<5}{str(r['start'].date())+'->'+str(r['end'].date()):<24}"
+                          f"{r['sharpe']:>8.2f}{'  n/a':>8}  (no trades / unhedged)")
+                    continue
+                spike = " *" if r.get("nb_spike") else "  "
+                print(f"    {r['fold']:<5}{str(r['start'].date())+'->'+str(r['end'].date()):<24}"
+                      f"{r['sharpe']:>8.2f}{r['h_sharpe']:>8.2f}"
+                      f"{r['max_drawdown']:>8.1%}{r['h_max_dd']:>8.1%}"
+                      f"{r['nb_mean']:>+8.3f}{r['nb_tail']:>8.3f}{spike}"
+                      f"${r['h_cost']:>6,.0f}")
+            spikes = [r for r in fold_results if r.get("nb_spike")]
+            if spikes:
+                print(f"\n  *** {len(spikes)} fold(s) with a net_beta spike (>|{NB_SPIKE}|) — "
+                      f"hedge is material there:")
+                for r in spikes:
+                    d_sh = r["h_sharpe"] - r["sharpe"]
+                    print(f"      Fold {r['fold']} ({r['start'].date()}->{r['end'].date()}): "
+                          f"tail net_beta={r['nb_tail']:.3f}  "
+                          f"Sharpe {r['sharpe']:.2f}->{r['h_sharpe']:.2f} ({d_sh:+.2f})")
+            else:
+                print(f"\n  No fold exceeded |net_beta| {NB_SPIKE} — the 'immaterial' finding "
+                      f"holds across all folds (spread stays market-neutral throughout).")
+
         _show(
             plot_walk_forward_results(stitched_wf, fold_results, overall_wf,
                                       {**params, "cost_bps": args.cost_bps}),
             f"Basket (dynamic) — {etf} — Walk-Forward Summary",
         )
         return
+
+    # Beta-hedge overlay (opt-in, additive) — prints the 3-way comparison and
+    # returns the selected-mode result for an extra hedged-equity window.
+    hedge_result = _beta_hedge_report(args, etf, etf_prices, trades,
+                                      equity_curve, capital, period,
+                                      segments=segments, traded_prices=prices,
+                                      window=window)
 
     print("Opening windows...")
     _show(
@@ -912,6 +1107,11 @@ def _run_basket_dynamic(args):
     if not trades.empty:
         _show(plot_equity_curve(equity_curve, trades, etf, "BASKET", capital),
               f"Basket (dynamic) — {etf} — Equity")
+        if hedge_result is not None:
+            _show(plot_equity_curve(hedge_result["hedged_equity"], trades, etf,
+                                    "BASKET+HEDGE", capital),
+                  f"Basket (dynamic) — {etf} — Equity (beta-hedged, "
+                  f"{getattr(args, 'hedge_mode', 'static')})")
         # Per-leg P&L breakdown
         etf_at_entry = etf_aligned.reindex(trades["entry_date"]).values
         etf_at_exit  = etf_aligned.reindex(trades["exit_date"]).values
@@ -1982,6 +2182,19 @@ def _register_basket(subparsers):
                         dest="regime_filter",
                         help="Suppress spread when normalised OLS coefficient shift exceeds T "
                              "(default: 0 = off). Try 0.20–0.50.")
+    parser.add_argument("--beta-hedge", default="none", choices=["none", "shares"],
+                        dest="beta_hedge",
+                        help="Add an additive SPY-shares market-beta hedge leg (backtest-only, "
+                             "default: none). Prints unhedged vs static vs dynamic comparison.")
+    parser.add_argument("--hedge-mode", default="static", choices=["static", "dynamic"],
+                        dest="hedge_mode",
+                        help="Beta-hedge rebalancing: static (net_beta frozen at entry) or "
+                             "dynamic (recomputed daily). Only used with --beta-hedge shares.")
+    parser.add_argument("--hedge-basis", default="proxy", choices=["proxy", "traded"],
+                        dest="hedge_basis",
+                        help="net_beta source: proxy (top-10 N-PORT value-weighted basket) or "
+                             "traded (actual rolling OLS coefficients of the traded basket). "
+                             "Only used with --beta-hedge shares.")
     parser.add_argument("--save-images", default=None, metavar="DIR", dest="save_images",
                         help="Export all figures as PNG files to DIR (requires kaleido).")
     parser.add_argument("--save-figs", default=None, metavar="DIR", dest="save_figs",
