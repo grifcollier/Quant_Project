@@ -59,18 +59,29 @@ def rolling_basket_spread(
                       condition number below the threshold is used (capped at
                       10.0 if none suffice). When 0 (default), behaviour is
                       identical to the original implementation.
-    return_diagnostics : If True, return (spread, cond_num_series) instead of
-                         just spread. cond_num_series contains the raw condition
-                         number at each bar (NaN for warmup and plain-OLS bars).
+                      WARNING — walk-forward Phase 3 (July 2026, all 5 ETFs):
+                      ridge stabilizes coefficients but breaks spread stationarity
+                      (ADF p-value fails the 0.10 gate) in the majority of
+                      activated folds for XLK, XLF, XLI, XLE. Do not enable in
+                      production without re-running the stationarity gate.
+    return_diagnostics : If True, return (spread, cond_num_series, cap_hit_series)
+                         instead of just spread.
+                         cond_num_series : condition number at each bar (NaN for
+                           warmup and plain-OLS bars).
+                         cap_hit_series  : bool (as float 0/1) — True at bars where
+                           cond > ridge_threshold and even alpha=10.0 did not bring
+                           XtX condition below the threshold (only meaningful when
+                           ridge_threshold > 0; always 0 otherwise).
 
     Returns
     -------
     pd.Series with same index as etf_prices (rows 0..window-1 are NaN), or
-    (spread, cond_num_series) when return_diagnostics=True.
+    (spread, cond_num_series, cap_hit_series) when return_diagnostics=True.
     """
     n = len(etf_prices)
     values    = np.full(n, np.nan)
-    cond_nums = np.full(n, np.nan)  # populated only when ridge_threshold > 0
+    cond_nums = np.full(n, np.nan)   # populated only when ridge_threshold > 0
+    cap_hits  = np.zeros(n, dtype=float)  # 1.0 where alpha cap is hit
 
     y_all = np.log(etf_prices.values).astype(float)
     X_all = np.log(constituent_prices.values).astype(float)
@@ -99,15 +110,18 @@ def rolling_basket_spread(
                 if cond > ridge_threshold:
                     # Find smallest grid alpha that brings X_train'X_train condition
                     # number below threshold; cap at grid maximum if none suffice.
-                    XtX_s = X_train.T @ X_train
+                    XtX_s   = X_train.T @ X_train
                     scale_s = np.trace(XtX_s) / X_train.shape[1]
                     eff_alpha = _RIDGE_GRID[-1]             # default: cap
+                    _cap_hit  = True
                     for a in _RIDGE_GRID:
                         A_s = XtX_s + a * scale_s * np.eye(X_train.shape[1])
                         ev  = np.linalg.eigvalsh(A_s)
                         if ev[0] > 0 and ev[-1] / ev[0] <= ridge_threshold:
                             eff_alpha = a
+                            _cap_hit  = False
                             break
+                    cap_hits[t] = float(_cap_hit)
 
         if eff_alpha > 0:
             XtX   = X_aug.T @ X_aug
@@ -135,5 +149,6 @@ def rolling_basket_spread(
     spread = pd.Series(values, index=etf_prices.index, name="basket_spread")
     if return_diagnostics:
         cond_series = pd.Series(cond_nums, index=etf_prices.index, name="condition_number")
-        return spread, cond_series
+        cap_series  = pd.Series(cap_hits,  index=etf_prices.index, name="cap_hit")
+        return spread, cond_series, cap_series
     return spread
