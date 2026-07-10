@@ -34,6 +34,42 @@ export function StatCard({
   );
 }
 
+/** Open-position exposure split into long / short / net (short shown negative). */
+export function ExposureCard({
+  long,
+  short,
+  net,
+  gross,
+  leverage,
+}: {
+  long: number;
+  short: number; // Alpaca convention: <= 0
+  net: number;
+  gross: number;
+  leverage?: number;
+}) {
+  const Row = ({ label, value, cls, bold }: { label: string; value: string; cls: string; bold?: boolean }) => (
+    <div className="flex items-baseline justify-between">
+      <span className="text-zinc-500 text-xs">{label}</span>
+      <span className={`tabular-nums ${bold ? 'text-base font-semibold' : 'text-sm'} ${cls}`}>{value}</span>
+    </div>
+  );
+  return (
+    <Card>
+      <p className="text-zinc-500 text-xs uppercase tracking-wider mb-2">Open Exposure</p>
+      <div className="space-y-1">
+        <Row label="Long" value={fmt(long)} cls="text-emerald-400" />
+        <Row label="Short" value={short < 0 ? fmtSigned(short) : fmt(0)} cls="text-blue-400" />
+        <Row label="Net" value={fmtSigned(net)} cls={colorSigned(net)} bold />
+      </div>
+      <p className="text-zinc-500 text-xs mt-2">
+        Gross {fmt(gross)}
+        {leverage != null && Number.isFinite(leverage) ? ` · ${leverage.toFixed(2)}× lev` : ''}
+      </p>
+    </Card>
+  );
+}
+
 export function Table({ headers, children }: { headers: string[]; children: ReactNode }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-zinc-800">

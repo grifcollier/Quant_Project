@@ -1,6 +1,6 @@
 import { getAccount, getPositions, type AlpacaPosition } from '@/lib/alpaca';
 import {
-  StatCard, Table, Tr, Td, ErrorBanner, EmptyState,
+  StatCard, ExposureCard, Table, Tr, Td, ErrorBanner, EmptyState,
   PageHeader, fmt, fmtPct, fmtSigned, colorSigned,
 } from './components/ui';
 
@@ -18,8 +18,11 @@ export default async function OverviewPage() {
   const lastEquity = account ? parseFloat(account.last_equity) : null;
   const dailyPl    = equity != null && lastEquity != null ? equity - lastEquity : null;
 
-  const totalMarketValue = positions.reduce((s, p) => s + parseFloat(p.market_value), 0);
-  const totalUpl         = positions.reduce((s, p) => s + parseFloat(p.unrealized_pl), 0);
+  const longVal  = positions.filter(p => p.side === 'long').reduce((s, p) => s + parseFloat(p.market_value), 0);
+  const shortVal = positions.filter(p => p.side === 'short').reduce((s, p) => s + parseFloat(p.market_value), 0); // <= 0
+  const netVal   = longVal + shortVal;
+  const grossVal = longVal + Math.abs(shortVal);
+  const leverage = equity && equity > 0 ? grossVal / equity : undefined;
 
   return (
     <div className="space-y-8">
@@ -30,12 +33,11 @@ export default async function OverviewPage() {
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
         <StatCard label="Portfolio Equity" value={account ? fmt(account.equity) : '—'} />
         <StatCard label="Buying Power"     value={account ? fmt(account.buying_power) : '—'} />
-        <StatCard
-          label="Open Positions Value"
-          value={positions.length > 0 ? fmt(totalMarketValue) : '—'}
-          sub={positions.length > 0 ? `${fmtSigned(totalUpl)} unrealized` : undefined}
-          positive={positions.length > 0 ? totalUpl >= 0 : undefined}
-        />
+        {positions.length > 0 ? (
+          <ExposureCard long={longVal} short={shortVal} net={netVal} gross={grossVal} leverage={leverage} />
+        ) : (
+          <StatCard label="Open Exposure" value="—" />
+        )}
         <StatCard
           label="Today's P&L"
           value={dailyPl != null ? fmtSigned(dailyPl) : '—'}

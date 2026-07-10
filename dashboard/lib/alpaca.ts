@@ -64,9 +64,25 @@ export interface AlpacaActivity {
   leaves_qty: string;
 }
 
+export interface AlpacaPortfolioHistory {
+  timestamp: number[];        // epoch seconds, one per period
+  equity: (number | null)[];  // account equity at each timestamp
+  profit_loss: (number | null)[];
+  profit_loss_pct: (number | null)[];
+  base_value: number;
+  timeframe: string;
+}
+
 export const getAccount   = () => get<AlpacaAccount>('/v2/account');
 export const getPositions = () => get<AlpacaPosition[]>('/v2/positions');
 export const getOrders    = () => get<AlpacaOrder[]>('/v2/orders?status=all&limit=500&direction=desc');
+
+// Daily account equity series for Sharpe/Sortino/drawdown. `period` is Alpaca's
+// number+unit form (D/W/M/A); 'all' spans the account's full history.
+export const getPortfolioHistory = (period = 'all', timeframe = '1D') =>
+  get<AlpacaPortfolioHistory>(
+    `/v2/account/portfolio/history?period=${period}&timeframe=${timeframe}&extended_hours=false`,
+  );
 export async function getActivities(): Promise<AlpacaActivity[]> {
   const all: AlpacaActivity[] = [];
   let pageToken: string | null = null;

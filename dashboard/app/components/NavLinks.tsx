@@ -9,6 +9,8 @@ const links = [
   { href: '/orders',    label: 'Orders'    },
   { href: '/pnl',       label: 'P&L'       },
   { href: '/returns',   label: 'Returns'   },
+  { href: '/analytics', label: 'Analytics' },
+  { href: '/by-etf',    label: 'By ETF'    },
 ];
 
 export default function NavLinks() {
