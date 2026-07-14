@@ -74,6 +74,9 @@ export const BACKTEST: Record<'5y' | '10y', BacktestPeriod> = {
   },
 };
 
+/** Annualize a cumulative return over `years`: CAGR = (1+total)^(1/years) - 1. */
+export const annualize = (total: number, years: number) => Math.pow(1 + total, 1 / years) - 1;
+
 export const BACKTEST_META = {
   capital: 100_000, // 5 ETFs × $20k
   costBps: 5,

@@ -3,7 +3,7 @@ import { symbolRoundTrips, basketTrades, tradeSummary } from '@/lib/trades';
 import {
   pctChange, sharpe, sortino, maxDrawdown, totalReturn, cagr,
 } from '@/lib/analytics';
-import { BACKTEST, BACKTEST_META, type BacktestPeriod } from '@/lib/backtest_reference';
+import { BACKTEST, BACKTEST_META, annualize, type BacktestPeriod } from '@/lib/backtest_reference';
 import {
   PageHeader, Card, Table, Tr, Td, StatCard, ErrorBanner, fmtPct, colorSigned,
 } from '../components/ui';
@@ -87,6 +87,12 @@ export default async function BacktestPage() {
             <Td className={`tabular-nums ${colorSigned(live.totalRet)}`}>{dash(pct(live.totalRet))}</Td>
           </Tr>
           <Tr>
+            <Td><span className="font-medium text-zinc-100">CAGR</span> <span className="text-zinc-500 text-xs">· annualized</span></Td>
+            <Td className={`tabular-nums ${colorSigned(annualize(bt5.totalReturn, bt5.years))}`}>{pct(annualize(bt5.totalReturn, bt5.years))}</Td>
+            <Td className={`tabular-nums ${colorSigned(annualize(bt10.totalReturn, bt10.years))}`}>{pct(annualize(bt10.totalReturn, bt10.years))}</Td>
+            <Td className={`tabular-nums ${colorSigned(live.cagr)}`}>{dash(pct(live.cagr))}</Td>
+          </Tr>
+          <Tr>
             <Td><span className="font-medium text-zinc-100">Max Drawdown</span> <span className="text-zinc-500 text-xs">· horizon-dependent</span></Td>
             <Td className="tabular-nums text-red-400">{ddStr(bt5.maxDrawdown)}</Td>
             <Td className="tabular-nums text-red-400">{ddStr(bt10.maxDrawdown)}</Td>
@@ -141,9 +147,9 @@ export default async function BacktestPage() {
             <div key={p.key}>
               <p className="text-xs text-zinc-400 mb-2">{p.label}</p>
               <div className="grid grid-cols-3 gap-4">
-                <StatCard label="5th percentile" value={pct(p.monteCarlo.p5)} positive />
-                <StatCard label="Median" value={pct(p.monteCarlo.median)} positive />
-                <StatCard label="95th percentile" value={pct(p.monteCarlo.p95)} positive />
+                <StatCard label="5th percentile" value={pct(p.monteCarlo.p5)} positive sub={`${pct(annualize(p.monteCarlo.p5, p.years))} CAGR`} />
+                <StatCard label="Median" value={pct(p.monteCarlo.median)} positive sub={`${pct(annualize(p.monteCarlo.median, p.years))} CAGR`} />
+                <StatCard label="95th percentile" value={pct(p.monteCarlo.p95)} positive sub={`${pct(annualize(p.monteCarlo.p95, p.years))} CAGR`} />
               </div>
             </div>
           ))}

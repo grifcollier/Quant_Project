@@ -53,6 +53,7 @@ if period_choice == "10y":
 if period_choice == "5y":
     m = {
         "ret": "42.2%",  "ret_d": "5 ETF combined",
+        "cagr": "7.3%",  "cagr_mc": ("6.1%", "7.3%", "8.6%"),
         "sr":  "4.59",   "sr_d":  "Combined portfolio",
         "dd":  "−0.7%",  "dd_d":  "Worst peak-to-trough",
         "oos": "33.6%",  "oos_d": "4 folds × 1y",
@@ -61,18 +62,20 @@ if period_choice == "5y":
 else:
     m = {
         "ret": "91.2%",  "ret_d": "5 ETF combined",
+        "cagr": "6.7%",  "cagr_mc": ("5.9%", "6.7%", "7.5%"),
         "sr":  "4.61",   "sr_d":  "Combined portfolio",
         "dd":  "−0.7%",  "dd_d":  "Worst peak-to-trough",
         "oos": "81.9%",  "oos_d": "9 folds × 1y",
         "mc":  "106.2%", "mc_d":  "MC 95th pct · 10k sims",
     }
 
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric(f"{period_choice} Portfolio Return", m["ret"],  m["ret_d"])
-c2.metric("Sharpe Ratio",                      m["sr"],   m["sr_d"])
-c3.metric("Max Drawdown",                      m["dd"],   m["dd_d"])
-c4.metric("OOS Walk-Forward",                  m["oos"],  m["oos_d"])
-c5.metric("MC 95th Percentile",                m["mc"],   m["mc_d"])
+c2.metric("CAGR (annualized)",                 m["cagr"], f"{period_choice} compounded", delta_color="off")
+c3.metric("Sharpe Ratio",                      m["sr"],   m["sr_d"])
+c4.metric("Max Drawdown",                      m["dd"],   m["dd_d"])
+c5.metric("OOS Walk-Forward",                  m["oos"],  m["oos_d"])
+c6.metric("MC 95th Percentile",                m["mc"],   m["mc_d"])
 
 st.divider()
 
@@ -175,16 +178,17 @@ with tab3:
     or whether the strategy got lucky with the specific sequence of returns.
     """)
 
+    cagr_mc = m["cagr_mc"]  # (5th, median, 95th) annualized
     if period_choice == "5y":
         col1, col2, col3 = st.columns(3)
-        col1.metric("5th Percentile Return",  "34.3%")
-        col2.metric("Median Return",          "42.1%")
-        col3.metric("95th Percentile Return", "50.9%")
+        col1.metric("5th Percentile Return",  "34.3%",  f"{cagr_mc[0]} CAGR", delta_color="off")
+        col2.metric("Median Return",          "42.1%",  f"{cagr_mc[1]} CAGR", delta_color="off")
+        col3.metric("95th Percentile Return", "50.9%",  f"{cagr_mc[2]} CAGR", delta_color="off")
     else:
         col1, col2, col3 = st.columns(3)
-        col1.metric("5th Percentile Return",  "77.7%")
-        col2.metric("Median Return",          "91.0%")
-        col3.metric("95th Percentile Return", "106.2%")
+        col1.metric("5th Percentile Return",  "77.7%",  f"{cagr_mc[0]} CAGR", delta_color="off")
+        col2.metric("Median Return",          "91.0%",  f"{cagr_mc[1]} CAGR", delta_color="off")
+        col3.metric("95th Percentile Return", "106.2%", f"{cagr_mc[2]} CAGR", delta_color="off")
 
     figs = _figs(f"portfolio{sfx}")
     if not figs:
