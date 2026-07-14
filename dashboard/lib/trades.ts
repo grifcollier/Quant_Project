@@ -123,6 +123,110 @@ export function symbolLeg(symbol: string): 'etf' | 'basket' {
   return ETF_SET.has(symbol) ? 'etf' : 'basket';
 }
 
+// ---------------------------------------------------------------------------
+// Completed round-trips & basket trades
+//
+// The raw fills produce many partial-fill lot matches (matchTrades). For the
+// "how many trades" view we collapse those two levels:
+//   1. symbolRoundTrips — one completed round-trip per symbol: the position
+//      goes flat -> open -> flat, however many fills that took, counts once.
+//      P&L = sell proceeds - buy cost over the cycle (exact, since it ends flat).
+//   2. basketTrades — every symbol round-trip of the SAME ETF sharing the same
+//      enter day and exit day is one basket trade (the whole spread cycle).
+// Positions still open (never returned to flat) are excluded — they aren't a
+// completed trade yet — so basket P&L can trail the lot-level realized P&L on
+// the P&L tab by whatever the open positions have realized so far.
+// ---------------------------------------------------------------------------
+export interface SymRoundTrip {
+  symbol: string;
+  etf: string;
+  direction: 'long' | 'short';
+  entryDate: string;
+  exitDate: string;
+  realizedPl: number;
+  notional: number; // capital deployed at entry (buy cost if long, sell proceeds if short)
+}
+
+const FLAT_TOL = 1e-6; // treat |net position| below this as flat (fractional-share drift)
+
+/** Collapse chronological fills into one completed round-trip per symbol cycle. */
+export function symbolRoundTrips(fills: AlpacaActivity[]): SymRoundTrip[] {
+  const pos: Record<string, number> = {};
+  const cur: Record<string, { entryDate: string; exitDate: string; dir: 'long' | 'short'; buy: number; sell: number }> = {};
+  const out: SymRoundTrip[] = [];
+
+  for (const f of fills) {
+    const sym = f.symbol;
+    const qty = parseFloat(f.qty);
+    const price = parseFloat(f.price);
+    const signed = f.side === 'buy' ? qty : -qty;
+
+    let c = cur[sym];
+    if (!c) {
+      c = { entryDate: f.transaction_time, exitDate: f.transaction_time, dir: signed > 0 ? 'long' : 'short', buy: 0, sell: 0 };
+      cur[sym] = c;
+    }
+    c.exitDate = f.transaction_time;
+    if (f.side === 'buy') c.buy += qty * price;
+    else c.sell += qty * price;
+
+    pos[sym] = (pos[sym] ?? 0) + signed;
+    if (Math.abs(pos[sym]) < FLAT_TOL) {
+      out.push({
+        symbol: sym,
+        etf: symbolToEtf(sym),
+        direction: c.dir,
+        entryDate: c.entryDate,
+        exitDate: c.exitDate,
+        realizedPl: c.sell - c.buy,
+        notional: c.dir === 'long' ? c.buy : c.sell,
+      });
+      delete cur[sym];
+    }
+  }
+  return out;
+}
+
+export interface BasketTrade {
+  etf: string;
+  entryDate: string;
+  exitDate: string;
+  holdDays: number;
+  legCount: number;
+  realizedPl: number;
+  returnPct: number; // basket P&L / capital deployed
+  longPl: number;
+  shortPl: number;
+}
+
+/** Group same-ETF, same enter-day/exit-day round-trips into one basket trade. */
+export function basketTrades(rts: SymRoundTrip[]): BasketTrade[] {
+  const groups: Record<string, SymRoundTrip[]> = {};
+  for (const r of rts) {
+    const key = `${r.etf}|${r.entryDate.slice(0, 10)}|${r.exitDate.slice(0, 10)}`;
+    (groups[key] ??= []).push(r);
+  }
+  return Object.values(groups)
+    .map((legs) => {
+      const realizedPl = legs.reduce((s, l) => s + l.realizedPl, 0);
+      const notional = legs.reduce((s, l) => s + l.notional, 0);
+      const entryDate = legs.reduce((m, l) => (l.entryDate < m ? l.entryDate : m), legs[0].entryDate);
+      const exitDate = legs.reduce((m, l) => (l.exitDate > m ? l.exitDate : m), legs[0].exitDate);
+      return {
+        etf: legs[0].etf,
+        entryDate,
+        exitDate,
+        holdDays: Math.round((new Date(exitDate).getTime() - new Date(entryDate).getTime()) / 86_400_000),
+        legCount: legs.length,
+        realizedPl,
+        returnPct: notional > 0 ? (realizedPl / notional) * 100 : 0,
+        longPl: legs.filter((l) => l.direction === 'long').reduce((s, l) => s + l.realizedPl, 0),
+        shortPl: legs.filter((l) => l.direction === 'short').reduce((s, l) => s + l.realizedPl, 0),
+      };
+    })
+    .sort((a, b) => new Date(b.exitDate).getTime() - new Date(a.exitDate).getTime());
+}
+
 export interface EtfStats {
   etf: string;
   realizedPl: number;
@@ -145,21 +249,21 @@ function tradeRatio(returns: number[], downsideOnly: boolean): number {
   return mean(returns) / denom;
 }
 
-export function etfBreakdown(trades: TradeRecord[]): EtfStats[] {
-  const groups: Record<string, TradeRecord[]> = {};
-  for (const t of trades) (groups[symbolToEtf(t.symbol)] ??= []).push(t);
+export function etfBreakdown(baskets: BasketTrade[]): EtfStats[] {
+  const groups: Record<string, BasketTrade[]> = {};
+  for (const b of baskets) (groups[b.etf] ??= []).push(b);
 
   return Object.entries(groups)
-    .map(([etf, ts]) => {
-      const rets = ts.map((t) => t.returnPct);
-      const wins = ts.filter((t) => t.realizedPl > 0).length;
+    .map(([etf, bs]) => {
+      const rets = bs.map((b) => b.returnPct);
+      const wins = bs.filter((b) => b.realizedPl > 0).length;
       return {
         etf,
-        realizedPl: ts.reduce((s, t) => s + t.realizedPl, 0),
-        longPl: ts.filter((t) => t.side === 'long').reduce((s, t) => s + t.realizedPl, 0),
-        shortPl: ts.filter((t) => t.side === 'short').reduce((s, t) => s + t.realizedPl, 0),
-        tradeCount: ts.length,
-        winRate: (wins / ts.length) * 100,
+        realizedPl: bs.reduce((s, b) => s + b.realizedPl, 0),
+        longPl: bs.reduce((s, b) => s + b.longPl, 0),
+        shortPl: bs.reduce((s, b) => s + b.shortPl, 0),
+        tradeCount: bs.length,
+        winRate: (wins / bs.length) * 100,
         avgReturn: mean(rets),
         tradeSharpe: tradeRatio(rets, false),
         tradeSortino: tradeRatio(rets, true),
@@ -176,7 +280,7 @@ export interface LegPeriod {
 }
 
 /** ETF-leg vs basket-leg realized P&L, bucketed by month (+ overall totals). */
-export function legBreakdown(trades: TradeRecord[]): {
+export function legBreakdown(rts: SymRoundTrip[]): {
   periods: LegPeriod[];
   totalEtf: number;
   totalBasket: number;
@@ -184,15 +288,15 @@ export function legBreakdown(trades: TradeRecord[]): {
   const map: Record<string, { etf: number; basket: number }> = {};
   let totalEtf = 0;
   let totalBasket = 0;
-  for (const t of trades) {
-    const key = t.exitDate.slice(0, 7);
+  for (const r of rts) {
+    const key = r.exitDate.slice(0, 7);
     const bucket = (map[key] ??= { etf: 0, basket: 0 });
-    if (symbolLeg(t.symbol) === 'etf') {
-      bucket.etf += t.realizedPl;
-      totalEtf += t.realizedPl;
+    if (symbolLeg(r.symbol) === 'etf') {
+      bucket.etf += r.realizedPl;
+      totalEtf += r.realizedPl;
     } else {
-      bucket.basket += t.realizedPl;
-      totalBasket += t.realizedPl;
+      bucket.basket += r.realizedPl;
+      totalBasket += r.realizedPl;
     }
   }
   const periods = Object.entries(map)
@@ -210,23 +314,23 @@ export interface TradeSummary {
   worstReturn: number;
 }
 
-/** Overall realized-trade summary (win rate / profit factor / hold), mirrors metrics.py. */
-export function tradeSummary(trades: TradeRecord[]): TradeSummary {
-  if (trades.length === 0) {
+/** Overall basket-trade summary (win rate / profit factor / hold). */
+export function tradeSummary(baskets: BasketTrade[]): TradeSummary {
+  if (baskets.length === 0) {
     return { tradeCount: 0, winRate: 0, profitFactor: null, avgHoldDays: 0, bestReturn: 0, worstReturn: 0 };
   }
-  const wins = trades.filter((t) => t.realizedPl > 0);
-  const losses = trades.filter((t) => t.realizedPl <= 0);
-  const lossSum = losses.reduce((s, t) => s + t.realizedPl, 0);
-  const rets = trades.map((t) => t.returnPct);
+  const wins = baskets.filter((b) => b.realizedPl > 0);
+  const losses = baskets.filter((b) => b.realizedPl <= 0);
+  const lossSum = losses.reduce((s, b) => s + b.realizedPl, 0);
+  const rets = baskets.map((b) => b.returnPct);
   return {
-    tradeCount: trades.length,
-    winRate: (wins.length / trades.length) * 100,
+    tradeCount: baskets.length,
+    winRate: (wins.length / baskets.length) * 100,
     profitFactor:
       wins.length && losses.length && lossSum !== 0
-        ? wins.reduce((s, t) => s + t.realizedPl, 0) / Math.abs(lossSum)
+        ? wins.reduce((s, b) => s + b.realizedPl, 0) / Math.abs(lossSum)
         : null,
-    avgHoldDays: mean(trades.map((t) => t.holdDays)),
+    avgHoldDays: mean(baskets.map((b) => b.holdDays)),
     bestReturn: Math.max(...rets),
     worstReturn: Math.min(...rets),
   };

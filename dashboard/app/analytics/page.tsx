@@ -1,5 +1,5 @@
 import { getPortfolioHistory, getActivities } from '@/lib/alpaca';
-import { matchTrades, tradeSummary, legBreakdown, type LegPeriod, type TradeSummary } from '@/lib/trades';
+import { symbolRoundTrips, basketTrades, tradeSummary, legBreakdown, type LegPeriod, type TradeSummary } from '@/lib/trades';
 import {
   pctChange, sharpe, sortino, maxDrawdown, currentDrawdown, totalReturn,
   monthlyMetrics, drawdownSeries, type MonthlyMetric, type DrawdownPoint,
@@ -39,9 +39,9 @@ export default async function AnalyticsPage() {
   let legs: LegPeriod[] = [];
   let tradesErr = '';
   try {
-    const trades = matchTrades([...(await getActivities())].reverse());
-    summary = tradeSummary(trades);
-    legs = legBreakdown(trades).periods;
+    const rts = symbolRoundTrips([...(await getActivities())].reverse());
+    summary = tradeSummary(basketTrades(rts));
+    legs = legBreakdown(rts).periods;
   } catch (e: unknown) {
     tradesErr = (e as Error).message;
   }

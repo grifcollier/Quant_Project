@@ -76,7 +76,7 @@ export default function AnalyticsClient({
         <StatCard label="Current DD" value={hasEquity ? `${(overall.curDD * 100).toFixed(2)}%` : '—'} positive={overall.curDD >= 0} />
         <StatCard label="Total Return" value={hasEquity ? fmtPct(overall.totalRet) : '—'} positive={overall.totalRet >= 0} />
         <StatCard label="Profit Factor" value={summary.profitFactor != null ? summary.profitFactor.toFixed(2) : summary.tradeCount ? '∞' : '—'} />
-        <StatCard label="Win Rate" value={summary.tradeCount ? `${summary.winRate.toFixed(0)}%` : '—'} sub={summary.tradeCount ? `${summary.tradeCount} trades` : undefined} />
+        <StatCard label="Win Rate" value={summary.tradeCount ? `${summary.winRate.toFixed(0)}%` : '—'} sub={summary.tradeCount ? `${summary.tradeCount} basket trades` : undefined} />
       </div>
 
       {/* Monthly Sharpe / Sortino / Return */}
@@ -107,7 +107,8 @@ export default function AnalyticsClient({
         <h2 className="text-base font-medium text-zinc-300 mb-1">Realized P&amp;L by Leg</h2>
         <SvgGroupedBar data={legData} aLabel="ETF leg" bLabel="Basket leg" fmtVal={(v) => `${v >= 0 ? '+' : '-'}$${Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 })}`} fmtTick={(v) => `$${(v / 1000).toFixed(1)}k`} />
         <p className="text-zinc-500 text-xs mt-2">
-          Realized P&amp;L split between the ETF-ticker legs and the constituent-stock (basket) legs, by month.
+          Realized P&amp;L split between the ETF-ticker legs and the constituent-stock (basket) legs, by month
+          (completed round-trips only). Profit Factor and Win Rate above count whole basket trades, not individual legs.
         </p>
       </Card>
     </div>

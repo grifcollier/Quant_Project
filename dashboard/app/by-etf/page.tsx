@@ -1,5 +1,5 @@
 import { getActivities } from '@/lib/alpaca';
-import { matchTrades, etfBreakdown } from '@/lib/trades';
+import { symbolRoundTrips, basketTrades, etfBreakdown } from '@/lib/trades';
 import {
   PageHeader, Card, Table, Tr, Td, ErrorBanner, EmptyState, fmtSigned, colorSigned,
 } from '../components/ui';
@@ -8,14 +8,15 @@ import EtfLegChart from './EtfLegChart';
 export const dynamic = 'force-dynamic';
 
 const PER_TRADE_TOOLTIP =
-  'Per-trade return statistic (mean/std of this ETF’s closed-trade returns). NOT the daily-return, ' +
-  '√252-annualized Sharpe on the Analytics tab — different methodology, not directly comparable.';
+  'Per basket-trade return statistic (mean/std of this ETF’s completed basket-cycle returns). With only a ' +
+  'handful of completed cycles per ETF this is very noisy. NOT the daily-return, √252-annualized Sharpe on ' +
+  'the Analytics tab — different methodology, not directly comparable.';
 
 export default async function ByEtfPage() {
   let rows: ReturnType<typeof etfBreakdown> = [];
   let err = '';
   try {
-    rows = etfBreakdown(matchTrades([...(await getActivities())].reverse()));
+    rows = etfBreakdown(basketTrades(symbolRoundTrips([...(await getActivities())].reverse())));
   } catch (e: unknown) {
     err = (e as Error).message;
   }
@@ -33,15 +34,18 @@ export default async function ByEtfPage() {
         <EmptyState message="No closed trades yet." />
       ) : (
         <>
-          {/* Unmissable caveat: these Sharpe/Sortino are per-trade, not the account daily-return metric. */}
+          {/* Surface both caveats: what a "basket trade" is, and that these Sharpe/Sortino are per-trade. */}
           <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2 text-xs text-amber-300/90">
-            <span className="font-medium text-amber-300">Note —</span> the{' '}
-            <span className="text-amber-400">Sharpe / Sortino (per-trade)</span> columns are per-trade return ratios, computed
-            differently from the daily-return, √252-annualized Sharpe on the <span className="text-zinc-300">Analytics</span> tab.
-            They are <span className="text-amber-300">not directly comparable</span> across the two tabs.
+            <span className="font-medium text-amber-300">Note —</span> a{' '}
+            <span className="text-zinc-200">basket trade</span> is one full spread cycle for an ETF — every leg (the ETF plus its
+            constituent stocks) entered and exited together counts as a <span className="text-zinc-200">single trade</span>, and only{' '}
+            <span className="text-zinc-200">completed</span> cycles are counted (open positions are excluded until they close).
+            The <span className="text-amber-400">Sharpe / Sortino (per-trade)</span> columns are per basket-trade return ratios —
+            noisy over so few cycles and <span className="text-amber-300">not comparable</span> to the daily-return, √252 Sharpe on
+            the <span className="text-zinc-300">Analytics</span> tab.
           </div>
 
-          <Table headers={['ETF', 'Realized P&L', 'Long P&L', 'Short P&L', 'Trades', 'Win Rate', 'Sharpe (per-trade)', 'Sortino (per-trade)']}>
+          <Table headers={['ETF', 'Realized P&L', 'Long P&L', 'Short P&L', 'Basket Trades', 'Win Rate', 'Sharpe (per-trade)', 'Sortino (per-trade)']}>
             {rows.map((r) => (
               <Tr key={r.etf}>
                 <Td><span className="font-medium text-zinc-100">{r.etf}</span></Td>
