@@ -23,12 +23,23 @@ interface Props {
   overall: Overall;
 }
 
+// A value that rounds to 0.00 at 2-decimal display is treated as neutral (no
+// +/- sign, gray) so a $0 / 0% period isn't shown as a green "+" gain. Used
+// consistently by the chart (bar color, tooltip, ticks) and the table.
+const EPS = 0.005;
+const signColor    = (v: number) => (v > EPS ? 'text-emerald-400' : v < -EPS ? 'text-red-400' : 'text-zinc-400');
+const fmtPlSigned  = (v: number) =>
+  Math.abs(v) < EPS
+    ? '$0.00'
+    : `${v > 0 ? '+' : '-'}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtPctSigned = (v: number) => (Math.abs(v) < EPS ? '0.00%' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`);
+
 const METRICS = [
   {
     key: 'realizedPl' as MetricKey,
     label: 'Realized P&L',
-    fmtVal:  (v: number) => `${v >= 0 ? '+' : '-'}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-    fmtTick: (v: number) => { const s = v > 0 ? '+' : v < 0 ? '-' : ''; const a = Math.abs(v); return a >= 1000 ? `${s}$${(a / 1000).toFixed(1)}k` : `${s}$${a.toFixed(0)}`; },
+    fmtVal:  fmtPlSigned,
+    fmtTick: (v: number) => { const s = v > EPS ? '+' : v < -EPS ? '-' : ''; const a = Math.abs(v); return a >= 1000 ? `${s}$${(a / 1000).toFixed(1)}k` : `${s}$${a.toFixed(0)}`; },
     signed: true,
   },
   {
@@ -41,8 +52,8 @@ const METRICS = [
   {
     key: 'avgReturn' as MetricKey,
     label: 'Avg Return',
-    fmtVal:  (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`,
-    fmtTick: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`,
+    fmtVal:  fmtPctSigned,
+    fmtTick: (v: number) => (Math.abs(v) < EPS ? '0%' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`),
     signed: true,
   },
   {
@@ -172,7 +183,7 @@ function BarChart({
         const x    = pad.left + i * slotW + slotW * 0.09;
         const bH   = Math.abs(toY(v) - zeroY);
         const bY   = v >= 0 ? zeroY - bH : zeroY;
-        const fill = !metric.signed ? '#818cf8' : v >= 0 ? '#34d399' : '#f87171';
+        const fill = !metric.signed ? '#818cf8' : v > EPS ? '#34d399' : v < -EPS ? '#f87171' : '#71717a';
         const cx   = x + barW / 2;
         const isHovered = hovered === i;
 
@@ -241,17 +252,14 @@ export default function ReturnsClient({ daily, weekly, monthly, overall }: Props
     return [...d].reverse().slice(0, 20);
   }, [granularity, daily, weekly, monthly]);
 
-  const fmtPl = (v: number) =>
-    `${v >= 0 ? '+' : '-'}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
   return (
     <div className="space-y-8">
       {/* Stat cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <StatCard
           label="Total Realized P&L"
-          value={overall.tradeCount > 0 ? fmtPl(overall.totalPl) : '—'}
-          positive={overall.tradeCount > 0 ? overall.totalPl >= 0 : undefined}
+          value={overall.tradeCount > 0 ? fmtPlSigned(overall.totalPl) : '—'}
+          positive={overall.tradeCount > 0 && Math.abs(overall.totalPl) >= EPS ? overall.totalPl > 0 : undefined}
         />
         <StatCard
           label="Win Rate"
@@ -260,8 +268,8 @@ export default function ReturnsClient({ daily, weekly, monthly, overall }: Props
         />
         <StatCard
           label="Avg Return / Trade"
-          value={overall.tradeCount > 0 ? `${overall.avgReturn >= 0 ? '+' : ''}${overall.avgReturn.toFixed(2)}%` : '—'}
-          positive={overall.tradeCount > 0 ? overall.avgReturn >= 0 : undefined}
+          value={overall.tradeCount > 0 ? fmtPctSigned(overall.avgReturn) : '—'}
+          positive={overall.tradeCount > 0 && Math.abs(overall.avgReturn) >= EPS ? overall.avgReturn > 0 : undefined}
         />
         <StatCard
           label="Avg Hold Days"
@@ -321,12 +329,12 @@ export default function ReturnsClient({ daily, weekly, monthly, overall }: Props
                   <tr key={row.key} className="border-b border-zinc-800/60 last:border-0 hover:bg-zinc-800/30 transition-colors">
                     <td className="px-4 py-3 text-zinc-200 whitespace-nowrap font-medium">{row.label}</td>
                     <td className="px-4 py-3 text-zinc-400 tabular-nums">{row.tradeCount}</td>
-                    <td className={`px-4 py-3 tabular-nums font-medium ${row.realizedPl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {fmtPl(row.realizedPl)}
+                    <td className={`px-4 py-3 tabular-nums font-medium ${signColor(row.realizedPl)}`}>
+                      {fmtPlSigned(row.realizedPl)}
                     </td>
                     <td className="px-4 py-3 text-zinc-300 tabular-nums">{row.winRate.toFixed(1)}%</td>
-                    <td className={`px-4 py-3 tabular-nums ${row.avgReturn >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {`${row.avgReturn >= 0 ? '+' : ''}${row.avgReturn.toFixed(2)}%`}
+                    <td className={`px-4 py-3 tabular-nums ${signColor(row.avgReturn)}`}>
+                      {fmtPctSigned(row.avgReturn)}
                     </td>
                     <td className="px-4 py-3 text-zinc-300 tabular-nums">{row.avgHoldDays.toFixed(1)}d</td>
                   </tr>
