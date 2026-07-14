@@ -73,10 +73,12 @@ const TIMEFRAMES = [
   { key: 'all' as Timeframe, label: 'All', days: null },
 ] as const;
 
+// Display label only — 'daily' still buckets by exit date, so a row is a
+// calendar day (which in practice holds the legs of one basket closing).
 const GRANULARITIES = [
-  { key: 'daily'   as Granularity, label: 'Daily'   },
-  { key: 'weekly'  as Granularity, label: 'Weekly'  },
-  { key: 'monthly' as Granularity, label: 'Monthly' },
+  { key: 'daily'   as Granularity, label: 'Per Trade' },
+  { key: 'weekly'  as Granularity, label: 'Weekly'    },
+  { key: 'monthly' as Granularity, label: 'Monthly'   },
 ] as const;
 
 function filterByTimeframe(data: PeriodStats[], days: number | null): PeriodStats[] {
