@@ -30,6 +30,14 @@ ETFS = ["XLK", "XLF", "XLV", "XLI", "XLE"]
 TOP_N = 15
 OUT = Path(__file__).parents[1] / "dashboard" / "lib" / "symbol_etf_map.json"
 
+# Symbols the live basket trades but that this script's N-PORT parse doesn't
+# resolve to a clean ticker (so build_constituent_history never surfaces them).
+# GOOGL/META are traded in the live XLK basket — verified by fill-day alignment:
+# every GOOGL/META fill lands on the same day as the XLK tech names (AAPL/MSFT/
+# NVDA), and XLK itself. Without this override they'd fall into an "Other" bucket
+# on the dashboard's By-ETF tab. Re-verify (and prune) if the basket changes.
+MANUAL_OVERRIDES = {"GOOGL": "XLK", "META": "XLK"}
+
 
 def _norm(ticker: str) -> str:
     """EDGAR slash share-class -> Alpaca dot form (BRK/B -> BRK.B)."""
@@ -70,6 +78,10 @@ def main() -> None:
             margin = ranked[0][1] - ranked[1][1]
             collisions.append((sym, winner, ranked, margin))
 
+    # Manual overrides for names the N-PORT parse misses (see MANUAL_OVERRIDES).
+    for sym, etf in MANUAL_OVERRIDES.items():
+        mapping[sym] = etf
+
     # ETF tickers map to themselves (overrides any constituent hit, e.g. an ETF
     # rarely holding another ETF — not expected for these, but explicit is safer).
     for etf in ETFS:
@@ -80,6 +92,9 @@ def main() -> None:
     OUT.write_text(json.dumps(mapping, indent=2) + "\n")
 
     print(f"\nWrote {len(mapping)} symbols -> {OUT}")
+    if MANUAL_OVERRIDES:
+        print("Manual overrides applied (N-PORT parse misses these): " +
+              ", ".join(f"{s}->{e}" for s, e in MANUAL_OVERRIDES.items()))
     print(f"Per-ETF counts: " + ", ".join(
         f"{e}={sum(1 for v in mapping.values() if v == e)}" for e in ETFS))
 

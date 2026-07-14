@@ -3,7 +3,7 @@ import { matchTrades, etfBreakdown } from '@/lib/trades';
 import {
   PageHeader, Card, Table, Tr, Td, ErrorBanner, EmptyState, fmtSigned, colorSigned,
 } from '../components/ui';
-import { SvgGroupedBar } from '../components/charts';
+import EtfLegChart from './EtfLegChart';
 
 export const dynamic = 'force-dynamic';
 
@@ -62,13 +62,7 @@ export default async function ByEtfPage() {
 
           <Card>
             <h2 className="text-base font-medium text-zinc-300 mb-1">Realized P&amp;L by ETF — Long vs Short</h2>
-            <SvgGroupedBar
-              data={legData}
-              aLabel="Long"
-              bLabel="Short"
-              fmtVal={(v) => `${v >= 0 ? '+' : '-'}$${Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
-              fmtTick={(v) => `$${(v / 1000).toFixed(1)}k`}
-            />
+            <EtfLegChart data={legData} />
           </Card>
         </>
       )}
