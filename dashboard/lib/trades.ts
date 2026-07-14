@@ -312,12 +312,14 @@ export interface TradeSummary {
   avgHoldDays: number;
   bestReturn: number;
   worstReturn: number;
+  avgWin: number;  // mean $ P&L of winning basket trades (compute_metrics avg_win)
+  avgLoss: number; // mean $ P&L of losing basket trades (<=0), compute_metrics avg_loss
 }
 
-/** Overall basket-trade summary (win rate / profit factor / hold). */
+/** Overall basket-trade summary (win rate / profit factor / hold), mirrors compute_metrics. */
 export function tradeSummary(baskets: BasketTrade[]): TradeSummary {
   if (baskets.length === 0) {
-    return { tradeCount: 0, winRate: 0, profitFactor: null, avgHoldDays: 0, bestReturn: 0, worstReturn: 0 };
+    return { tradeCount: 0, winRate: 0, profitFactor: null, avgHoldDays: 0, bestReturn: 0, worstReturn: 0, avgWin: 0, avgLoss: 0 };
   }
   const wins = baskets.filter((b) => b.realizedPl > 0);
   const losses = baskets.filter((b) => b.realizedPl <= 0);
@@ -333,6 +335,8 @@ export function tradeSummary(baskets: BasketTrade[]): TradeSummary {
     avgHoldDays: mean(baskets.map((b) => b.holdDays)),
     bestReturn: Math.max(...rets),
     worstReturn: Math.min(...rets),
+    avgWin: wins.length ? mean(wins.map((b) => b.realizedPl)) : 0,
+    avgLoss: losses.length ? mean(losses.map((b) => b.realizedPl)) : 0,
   };
 }
 

@@ -1,7 +1,7 @@
 import { getPortfolioHistory, getActivities } from '@/lib/alpaca';
 import { symbolRoundTrips, basketTrades, tradeSummary, legBreakdown, type LegPeriod, type TradeSummary } from '@/lib/trades';
 import {
-  pctChange, sharpe, sortino, maxDrawdown, currentDrawdown, totalReturn,
+  pctChange, sharpe, sortino, maxDrawdown, currentDrawdown, totalReturn, cagr, calmar,
   monthlyMetrics, drawdownSeries, type MonthlyMetric, type DrawdownPoint,
 } from '@/lib/analytics';
 import { PageHeader, ErrorBanner } from '../components/ui';
@@ -25,17 +25,21 @@ export default async function AnalyticsPage() {
   }
 
   const returns = pctChange(eq);
+  const maxDD = maxDrawdown(eq);
+  const cagrVal = cagr(eq);
   const overall = {
     sharpe: sharpe(returns),
     sortino: sortino(returns),
-    maxDD: maxDrawdown(eq),
+    maxDD,
     curDD: currentDrawdown(eq),
     totalRet: totalReturn(eq),
+    cagr: cagrVal,
+    calmar: calmar(cagrVal, maxDD),
   };
   const monthly: MonthlyMetric[] = monthlyMetrics(ts, eq);
   const drawdown: DrawdownPoint[] = drawdownSeries(ts, eq);
 
-  let summary: TradeSummary = { tradeCount: 0, winRate: 0, profitFactor: null, avgHoldDays: 0, bestReturn: 0, worstReturn: 0 };
+  let summary: TradeSummary = { tradeCount: 0, winRate: 0, profitFactor: null, avgHoldDays: 0, bestReturn: 0, worstReturn: 0, avgWin: 0, avgLoss: 0 };
   let legs: LegPeriod[] = [];
   let tradesErr = '';
   try {

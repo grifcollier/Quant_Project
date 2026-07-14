@@ -93,6 +93,18 @@ export function totalReturn(equity: number[]): number {
   return valid[valid.length - 1] / valid[0] - 1;
 }
 
+/** CAGR = (final/start)^(252/n_days) - 1, matching compute_metrics (n_days = # equity points). */
+export function cagr(equity: number[]): number {
+  const valid = equity.filter((e) => Number.isFinite(e) && e > 0);
+  if (valid.length < 2) return 0;
+  return Math.pow(valid[valid.length - 1] / valid[0], 252 / valid.length) - 1;
+}
+
+/** Calmar = CAGR / |maxDD|, matching compute_metrics (NaN when no drawdown). */
+export function calmar(cagrValue: number, maxDD: number): number {
+  return maxDD < 0 ? cagrValue / Math.abs(maxDD) : NaN;
+}
+
 export interface MonthlyMetric {
   key: string; // YYYY-MM
   label: string; // "Jan 25"

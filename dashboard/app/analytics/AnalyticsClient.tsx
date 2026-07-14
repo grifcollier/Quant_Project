@@ -1,9 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { StatCard, Card, fmtPct } from '../components/ui';
+import { StatCard, Card, fmtPct, fmtSigned } from '../components/ui';
 import { SvgBarChart, SvgLineChart, SvgGroupedBar, SegmentedControl, type BarDatum } from '../components/charts';
-import { mean, type MonthlyMetric, type DrawdownPoint } from '@/lib/analytics';
+import type { MonthlyMetric, DrawdownPoint } from '@/lib/analytics';
 import type { LegPeriod, TradeSummary } from '@/lib/trades';
 
 interface Overall {
@@ -12,6 +12,8 @@ interface Overall {
   maxDD: number;
   curDD: number;
   totalRet: number;
+  cagr: number;
+  calmar: number;
 }
 
 const THIN_MONTH = 15; // fewer daily obs than this = de-emphasized (noisy Sharpe)
@@ -40,15 +42,6 @@ export default function AnalyticsClient({
 }) {
   const [metric, setMetric] = useState<MetricKey>('sharpe');
 
-  // Headline Sharpe/Sortino = simple average of the monthly values. Only months
-  // with >=2 daily returns have a defined ratio; degenerate months are excluded
-  // so a 1-day partial month can't drag the average to 0. Updates as each new
-  // month's trades close and realize.
-  const solidMonths = monthly.filter((m) => m.tradingDays >= 2);
-  const nMo = solidMonths.length;
-  const avgSharpe = nMo ? mean(solidMonths.map((m) => m.sharpe)) : null;
-  const avgSortino = nMo ? mean(solidMonths.map((m) => m.sortino)) : null;
-
   const isRet = metric === 'ret';
   const monthlyBars: BarDatum[] = monthly.map((m) => ({
     label: m.label,
@@ -68,15 +61,37 @@ export default function AnalyticsClient({
 
   return (
     <div className="space-y-8">
-      {/* KPI tiles */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
-        <StatCard label="Sharpe (avg monthly)" value={avgSharpe != null ? avgSharpe.toFixed(2) : '—'} positive={(avgSharpe ?? 0) >= 0} sub={nMo ? `avg of ${nMo} mo` : undefined} />
-        <StatCard label="Sortino (avg monthly)" value={avgSortino != null ? avgSortino.toFixed(2) : '—'} positive={(avgSortino ?? 0) >= 0} sub={nMo ? `avg of ${nMo} mo` : undefined} />
-        <StatCard label="Max Drawdown" value={hasEquity ? `${(overall.maxDD * 100).toFixed(2)}%` : '—'} positive={false} />
-        <StatCard label="Current DD" value={hasEquity ? `${(overall.curDD * 100).toFixed(2)}%` : '—'} positive={overall.curDD >= 0} />
-        <StatCard label="Total Return" value={hasEquity ? fmtPct(overall.totalRet) : '—'} positive={overall.totalRet >= 0} />
-        <StatCard label="Profit Factor" value={summary.profitFactor != null ? summary.profitFactor.toFixed(2) : summary.tradeCount ? '∞' : '—'} />
-        <StatCard label="Win Rate" value={summary.tradeCount ? `${summary.winRate.toFixed(0)}%` : '—'} sub={summary.tradeCount ? `${summary.tradeCount} basket trades` : undefined} />
+      {/* KPI tiles — split by comparability so the backtest-comparable ones can't
+          be confused with the account-scale ones. Same formulas as the Python
+          compute_metrics (daily equity, √252, ddof=1; trade = basket round-trip). */}
+      <div>
+        <div className="flex items-baseline gap-2 mb-2">
+          <h2 className="text-sm font-medium text-emerald-300/90">Risk-adjusted — comparable to backtest</h2>
+          <span className="text-xs text-zinc-500">same method as the Streamlit backtester; scale-invariant</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+          <StatCard label="Sharpe" value={hasEquity ? overall.sharpe.toFixed(2) : '—'} positive={overall.sharpe >= 0} sub="daily equity · √252" />
+          <StatCard label="Sortino" value={hasEquity ? overall.sortino.toFixed(2) : '—'} positive={overall.sortino >= 0} sub="daily equity · √252" />
+          <StatCard label="Calmar" value={hasEquity && Number.isFinite(overall.calmar) ? overall.calmar.toFixed(2) : '—'} positive={overall.calmar >= 0} sub="CAGR / |maxDD|" />
+          <StatCard label="Profit Factor" value={summary.profitFactor != null ? summary.profitFactor.toFixed(2) : summary.tradeCount ? '∞' : '—'} />
+          <StatCard label="Win Rate" value={summary.tradeCount ? `${summary.winRate.toFixed(0)}%` : '—'} sub={summary.tradeCount ? `${summary.tradeCount} basket trades` : undefined} />
+          <StatCard label="Avg Hold" value={summary.tradeCount ? `${summary.avgHoldDays.toFixed(1)}d` : '—'} />
+        </div>
+      </div>
+
+      <div>
+        <div className="flex items-baseline gap-2 mb-2">
+          <h2 className="text-sm font-medium text-zinc-300">Account-level — this $100k paper account</h2>
+          <span className="text-xs text-zinc-500">depend on account size &amp; leverage; not directly comparable to the backtest's return scale</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+          <StatCard label="Total Return" value={hasEquity ? fmtPct(overall.totalRet) : '—'} positive={overall.totalRet >= 0} />
+          <StatCard label="CAGR" value={hasEquity ? fmtPct(overall.cagr) : '—'} positive={overall.cagr >= 0} sub="annualized" />
+          <StatCard label="Max Drawdown" value={hasEquity ? `${(overall.maxDD * 100).toFixed(2)}%` : '—'} positive={false} />
+          <StatCard label="Current DD" value={hasEquity ? `${(overall.curDD * 100).toFixed(2)}%` : '—'} positive={overall.curDD >= 0} />
+          <StatCard label="Avg Win" value={summary.avgWin ? fmtSigned(summary.avgWin) : '—'} positive />
+          <StatCard label="Avg Loss" value={summary.avgLoss ? fmtSigned(summary.avgLoss) : '—'} positive={false} />
+        </div>
       </div>
 
       {/* Monthly Sharpe / Sortino / Return */}
