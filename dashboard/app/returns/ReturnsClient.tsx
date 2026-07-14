@@ -222,10 +222,11 @@ function BarChart({
 }
 
 export default function ReturnsClient({ daily, weekly, monthly, overall }: Props) {
+  // One shared granularity drives both the chart and the Period Breakdown table,
+  // so switching Daily/Weekly/Monthly in either place keeps them in sync.
   const [granularity, setGranularity] = useState<Granularity>('weekly');
   const [metricKey,   setMetricKey  ] = useState<MetricKey>('realizedPl');
   const [timeframe,   setTimeframe  ] = useState<Timeframe>('all');
-  const [tableGran,   setTableGran  ] = useState<Granularity>('weekly');
 
   const metric = METRICS.find(m => m.key === metricKey)!;
   const tfDays = TIMEFRAMES.find(t => t.key === timeframe)!.days;
@@ -236,9 +237,9 @@ export default function ReturnsClient({ daily, weekly, monthly, overall }: Props
   }, [granularity, tfDays, daily, weekly, monthly]);
 
   const tableData = useMemo(() => {
-    const d = tableGran === 'daily' ? daily : tableGran === 'weekly' ? weekly : monthly;
+    const d = granularity === 'daily' ? daily : granularity === 'weekly' ? weekly : monthly;
     return [...d].reverse().slice(0, 20);
-  }, [tableGran, daily, weekly, monthly]);
+  }, [granularity, daily, weekly, monthly]);
 
   const fmtPl = (v: number) =>
     `${v >= 0 ? '+' : '-'}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -298,7 +299,7 @@ export default function ReturnsClient({ daily, weekly, monthly, overall }: Props
       <div>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-medium text-zinc-300">Period Breakdown</h2>
-          <SegmentedControl options={GRANULARITIES} value={tableGran} onChange={setTableGran} />
+          <SegmentedControl options={GRANULARITIES} value={granularity} onChange={setGranularity} />
         </div>
 
         {tableData.length === 0 ? (
