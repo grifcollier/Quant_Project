@@ -1,7 +1,7 @@
 import { getPortfolioHistory, getActivities } from '@/lib/alpaca';
 import { symbolRoundTrips, basketTrades, tradeSummary } from '@/lib/trades';
 import {
-  pctChange, sharpe, sortino, maxDrawdown, totalReturn, cagr,
+  pctChange, sharpe, sortino, maxDrawdown, totalReturn, cagr, CAGR_MIN_TRADING_DAYS,
 } from '@/lib/analytics';
 import { BACKTEST, BACKTEST_META, annualize, type BacktestPeriod } from '@/lib/backtest_reference';
 import {
@@ -16,7 +16,7 @@ const ddStr = (v: number) => `${(v * 100).toFixed(2)}%`;
 
 export default async function BacktestPage() {
   // ── Live paper metrics (same formulas as the backtester / Analytics tab) ──
-  let live = { sharpe: 0, sortino: 0, maxDD: 0, totalRet: 0, cagr: 0, hasEquity: false };
+  let live = { sharpe: 0, sortino: 0, maxDD: 0, totalRet: 0, cagr: 0, hasEquity: false, days: 0 };
   let phErr = '';
   try {
     const ph = await getPortfolioHistory('all', '1D');
@@ -26,11 +26,15 @@ export default async function BacktestPage() {
     const r = pctChange(eq);
     live = {
       sharpe: sharpe(r), sortino: sortino(r), maxDD: maxDrawdown(eq),
-      totalRet: totalReturn(eq), cagr: cagr(eq), hasEquity: eq.length > 1,
+      totalRet: totalReturn(eq), cagr: cagr(eq), hasEquity: eq.length > 1, days: eq.length,
     };
   } catch (e: unknown) {
     phErr = (e as Error).message;
   }
+
+  // Live CAGR annualizes the equity curve; over a short window that's noise, so
+  // it's withheld until there's enough history (backtest CAGR is unaffected).
+  const liveCagrReady = live.days >= CAGR_MIN_TRADING_DAYS;
 
   let summary = { tradeCount: 0, winRate: 0, profitFactor: null as number | null, avgHoldDays: 0 };
   let tradesErr = '';
@@ -90,7 +94,7 @@ export default async function BacktestPage() {
             <Td><span className="font-medium text-zinc-100">CAGR</span> <span className="text-zinc-500 text-xs">· annualized</span></Td>
             <Td className={`tabular-nums ${colorSigned(annualize(bt5.totalReturn, bt5.years))}`}>{pct(annualize(bt5.totalReturn, bt5.years))}</Td>
             <Td className={`tabular-nums ${colorSigned(annualize(bt10.totalReturn, bt10.years))}`}>{pct(annualize(bt10.totalReturn, bt10.years))}</Td>
-            <Td className={`tabular-nums ${colorSigned(live.cagr)}`}>{dash(pct(live.cagr))}</Td>
+            <Td className={`tabular-nums ${liveCagrReady ? colorSigned(live.cagr) : 'text-zinc-600'}`}>{live.hasEquity && liveCagrReady ? pct(live.cagr) : '—'}</Td>
           </Tr>
           <Tr>
             <Td><span className="font-medium text-zinc-100">Max Drawdown</span> <span className="text-zinc-500 text-xs">· horizon-dependent</span></Td>
@@ -155,6 +159,15 @@ export default async function BacktestPage() {
           ))}
         </div>
       </Card>
+
+      {live.hasEquity && !liveCagrReady && (
+        <p className="text-zinc-500 text-xs">
+          <span className="text-zinc-400">Live CAGR withheld</span> — shown once there are ≥{CAGR_MIN_TRADING_DAYS} trading
+          days (~6 months) of paper history (currently {live.days}d). Annualizing a shorter window extrapolates a few weeks
+          across a full year and is dominated by noise; Total Return and Sharpe above are not extrapolated. Backtest CAGR
+          spans 5–10 years and is unaffected.
+        </p>
+      )}
 
       <p className="text-zinc-600 text-xs">
         Backtest figures are precomputed offline (the dashboard can&apos;t run the Python backtest live). Regenerate with{' '}

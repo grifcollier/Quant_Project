@@ -12,6 +12,13 @@
 const TRADING_DAYS = 252;
 const ANN = Math.sqrt(TRADING_DAYS);
 
+/**
+ * Minimum live trading days before an annualized CAGR is shown. Annualizing a
+ * shorter window extrapolates a few weeks across a full year via the 252/n_days
+ * exponent, so the figure is dominated by noise. ~126 = 6 months.
+ */
+export const CAGR_MIN_TRADING_DAYS = 126;
+
 export function mean(xs: number[]): number {
   return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0;
 }

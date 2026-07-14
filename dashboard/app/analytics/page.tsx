@@ -35,6 +35,7 @@ export default async function AnalyticsPage() {
     totalRet: totalReturn(eq),
     cagr: cagrVal,
     calmar: calmar(cagrVal, maxDD),
+    days: eq.length,
   };
   const monthly: MonthlyMetric[] = monthlyMetrics(ts, eq);
   const drawdown: DrawdownPoint[] = drawdownSeries(ts, eq);

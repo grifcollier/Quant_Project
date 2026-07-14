@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { StatCard, Card, fmtPct, fmtSigned } from '../components/ui';
 import { SvgBarChart, SvgLineChart, SvgGroupedBar, SegmentedControl, type BarDatum } from '../components/charts';
-import type { MonthlyMetric, DrawdownPoint } from '@/lib/analytics';
+import { CAGR_MIN_TRADING_DAYS, type MonthlyMetric, type DrawdownPoint } from '@/lib/analytics';
 import type { LegPeriod, TradeSummary } from '@/lib/trades';
 
 interface Overall {
@@ -14,6 +14,7 @@ interface Overall {
   totalRet: number;
   cagr: number;
   calmar: number;
+  days: number;
 }
 
 const THIN_MONTH = 15; // fewer daily obs than this = de-emphasized (noisy Sharpe)
@@ -41,6 +42,10 @@ export default function AnalyticsClient({
   hasEquity: boolean;
 }) {
   const [metric, setMetric] = useState<MetricKey>('sharpe');
+
+  // Live CAGR annualizes the equity curve — meaningless over a short window, so
+  // withhold it until there's enough paper history (see note at the bottom).
+  const cagrReady = overall.days >= CAGR_MIN_TRADING_DAYS;
 
   const isRet = metric === 'ret';
   const monthlyBars: BarDatum[] = monthly.map((m) => ({
@@ -86,7 +91,7 @@ export default function AnalyticsClient({
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
           <StatCard label="Total Return" value={hasEquity ? fmtPct(overall.totalRet) : '—'} positive={overall.totalRet >= 0} />
-          <StatCard label="CAGR" value={hasEquity ? fmtPct(overall.cagr) : '—'} positive={overall.cagr >= 0} sub="annualized" />
+          <StatCard label="CAGR" value={hasEquity && cagrReady ? fmtPct(overall.cagr) : '—'} positive={overall.cagr >= 0} sub={cagrReady ? 'annualized' : 'withheld — early'} />
           <StatCard label="Max Drawdown" value={hasEquity ? `${(overall.maxDD * 100).toFixed(2)}%` : '—'} positive={false} />
           <StatCard label="Current DD" value={hasEquity ? `${(overall.curDD * 100).toFixed(2)}%` : '—'} positive={overall.curDD >= 0} />
           <StatCard label="Avg Win" value={summary.avgWin ? fmtSigned(summary.avgWin) : '—'} positive />
@@ -126,6 +131,14 @@ export default function AnalyticsClient({
           (completed round-trips only). Profit Factor and Win Rate above count whole basket trades, not individual legs.
         </p>
       </Card>
+
+      {!cagrReady && (
+        <p className="text-zinc-500 text-xs leading-relaxed">
+          <span className="text-zinc-400">CAGR withheld</span> — shown once there are ≥{CAGR_MIN_TRADING_DAYS} trading days
+          (~6 months) of history (currently {overall.days}d). Annualizing a shorter window extrapolates a few weeks across a
+          full year and is dominated by noise. Total Return above is the honest to-date figure.
+        </p>
+      )}
     </div>
   );
 }
