@@ -27,6 +27,10 @@ WINDOW        = 60
 VIX_FILTER    = 0.0    # suppress new entries when VIX > this level (0 = off)
 MAX_HOLD_DAYS = 30     # force-close positions held longer than this many days
 VOL_TARGET    = 0.10   # target 10% annualised spread P&L volatility
+CAPITAL       = 20_000.0  # per-ETF capital, matching the backtester's $20k/ETF
+                          # (5 ETFs = $100k). Without this, run.py's trade command
+                          # defaults --capital to 0 and sizes each ETF against the
+                          # FULL account equity, deploying ~5x more per leg.
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 EXECUTE   = "--execute" in sys.argv
@@ -49,6 +53,7 @@ def run_basket(etf: str) -> dict:
         sys.executable, str(ROOT / "run.py"),
         "trade", "--strategy", "basket",
         "--etf", etf,
+        "--capital",       str(CAPITAL),
         "--z-entry",       str(Z_ENTRY),
         "--z-exit",        str(Z_EXIT),
         "--z-stop",        str(Z_STOP),
