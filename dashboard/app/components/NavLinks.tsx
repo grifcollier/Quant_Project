@@ -11,6 +11,7 @@ const links = [
   { href: '/returns',   label: 'Returns'   },
   { href: '/analytics', label: 'Analytics' },
   { href: '/by-etf',    label: 'By ETF'    },
+  { href: '/backtest',  label: 'Backtest'  },
 ];
 
 export default function NavLinks() {
