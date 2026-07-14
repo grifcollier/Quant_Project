@@ -2,9 +2,9 @@
 
 import { useState, useMemo } from 'react';
 import { StatCard } from '../components/ui';
-import type { PeriodStats, TradeRow } from '@/lib/trades';
+import type { PeriodStats } from '@/lib/trades';
 
-type Granularity = 'trade' | 'weekly' | 'monthly';
+type Granularity = 'daily' | 'weekly' | 'monthly';
 type MetricKey   = 'realizedPl' | 'winRate' | 'avgReturn' | 'avgHoldDays';
 type Timeframe   = '30' | '90' | '180' | '365' | 'all';
 
@@ -17,7 +17,7 @@ interface Overall {
 }
 
 interface Props {
-  trades:  TradeRow[];
+  daily:   PeriodStats[];
   weekly:  PeriodStats[];
   monthly: PeriodStats[];
   overall: Overall;
@@ -74,32 +74,18 @@ const TIMEFRAMES = [
 ] as const;
 
 const GRANULARITIES = [
-  { key: 'trade'   as Granularity, label: 'Per Trade' },
-  { key: 'weekly'  as Granularity, label: 'Weekly'    },
-  { key: 'monthly' as Granularity, label: 'Monthly'   },
+  { key: 'daily'   as Granularity, label: 'Daily'   },
+  { key: 'weekly'  as Granularity, label: 'Weekly'  },
+  { key: 'monthly' as Granularity, label: 'Monthly' },
 ] as const;
 
-// In per-trade mode a single trade is simply a win or a loss, so the win-rate
-// series would only ever be 100/0 — drop it rather than plot a meaningless bar.
-const visibleMetrics = (isTrade: boolean) =>
-  isTrade ? METRICS.filter(m => m.key !== 'winRate') : METRICS;
-
-// Per-trade columns describe one trade, not an average over many.
-const TRADE_LABELS: Partial<Record<MetricKey, string>> = { avgReturn: 'Return', avgHoldDays: 'Hold Days' };
-const metricLabel = (m: typeof METRICS[number], isTrade: boolean) =>
-  (isTrade && TRADE_LABELS[m.key]) || m.label;
-
-function filterByTimeframe<T extends PeriodStats>(data: T[], days: number | null): T[] {
+function filterByTimeframe(data: PeriodStats[], days: number | null): PeriodStats[] {
   if (!days) return data;
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - days);
-  const iso = cutoff.toISOString();
-  // Every key is date-prefixed — 'YYYY-MM' for monthly buckets, 'YYYY-MM-DD'
-  // for weekly buckets and per-trade rows (which append ETF + entry date after
-  // the exit date) — so comparing the prefix lexicographically compares dates.
-  return data.filter(d =>
-    d.key.length === 7 ? d.key >= iso.slice(0, 7) : d.key.slice(0, 10) >= iso.slice(0, 10),
-  );
+  const cutoffDay   = cutoff.toISOString().slice(0, 10);
+  const cutoffMonth = cutoff.toISOString().slice(0, 7);
+  return data.filter(d => d.key.length === 7 ? d.key >= cutoffMonth : d.key >= cutoffDay);
 }
 
 function SegmentedControl<T extends string>({
@@ -133,11 +119,9 @@ function SegmentedControl<T extends string>({
 function BarChart({
   data,
   metric,
-  sub,
 }: {
   data: PeriodStats[];
   metric: typeof METRICS[number];
-  sub: (d: PeriodStats) => string;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
 
@@ -203,8 +187,7 @@ function BarChart({
         const cx   = x + barW / 2;
         const isHovered = hovered === i;
 
-        // Widen for long sub-lines (per-trade rows read "XLK Jun 3→Jun 12 · 6 legs").
-        const tipW = Math.max(90, sub(d).length * 5 + 16), tipH = 30;
+        const tipW = 90, tipH = 30;
         const tipX = Math.min(Math.max(cx - tipW / 2, pad.left), W - pad.right - tipW);
         const tipY = Math.max(4, Math.min(bY, zeroY) - tipH - 6);
 
@@ -238,7 +221,7 @@ function BarChart({
                   {metric.fmtVal(v)}
                 </text>
                 <text x={tipX + tipW / 2} y={tipY + 25} textAnchor="middle" fontSize={9} fill="#71717a">
-                  {sub(d)}
+                  {d.label} · {d.tradeCount} trade{d.tradeCount !== 1 ? 's' : ''}
                 </text>
               </g>
             )}
@@ -249,30 +232,25 @@ function BarChart({
   );
 }
 
-export default function ReturnsClient({ trades, weekly, monthly, overall }: Props) {
+export default function ReturnsClient({ daily, weekly, monthly, overall }: Props) {
   // One shared granularity drives both the chart and the Period Breakdown table,
-  // so switching Per Trade/Weekly/Monthly in either place keeps them in sync.
+  // so switching Daily/Weekly/Monthly in either place keeps them in sync.
   const [granularity, setGranularity] = useState<Granularity>('weekly');
   const [metricKey,   setMetricKey  ] = useState<MetricKey>('realizedPl');
   const [timeframe,   setTimeframe  ] = useState<Timeframe>('all');
 
-  const isTrade = granularity === 'trade';
-  const metrics = visibleMetrics(isTrade);
-  const metric  = METRICS.find(m => m.key === metricKey)!;
-  const tfDays  = TIMEFRAMES.find(t => t.key === timeframe)!.days;
+  const metric = METRICS.find(m => m.key === metricKey)!;
+  const tfDays = TIMEFRAMES.find(t => t.key === timeframe)!.days;
 
-  // Win Rate has no per-trade meaning, so fall back when switching into it.
-  const changeGranularity = (g: Granularity) => {
-    setGranularity(g);
-    if (g === 'trade' && metricKey === 'winRate') setMetricKey('realizedPl');
-  };
+  const chartData = useMemo(() => {
+    const d = granularity === 'daily' ? daily : granularity === 'weekly' ? weekly : monthly;
+    return filterByTimeframe(d, tfDays);
+  }, [granularity, tfDays, daily, weekly, monthly]);
 
-  const source = useMemo(
-    () => (granularity === 'trade' ? trades : granularity === 'weekly' ? weekly : monthly),
-    [granularity, trades, weekly, monthly],
-  );
-  const chartData = useMemo(() => filterByTimeframe(source, tfDays), [source, tfDays]);
-  const tableData = useMemo(() => [...source].reverse().slice(0, 20), [source]);
+  const tableData = useMemo(() => {
+    const d = granularity === 'daily' ? daily : granularity === 'weekly' ? weekly : monthly;
+    return [...d].reverse().slice(0, 20);
+  }, [granularity, daily, weekly, monthly]);
 
   return (
     <div className="space-y-8">
@@ -286,7 +264,7 @@ export default function ReturnsClient({ trades, weekly, monthly, overall }: Prop
         <StatCard
           label="Win Rate"
           value={overall.tradeCount > 0 ? `${overall.winRate.toFixed(1)}%` : '—'}
-          sub={overall.tradeCount > 0 ? `${overall.tradeCount} basket trades` : undefined}
+          sub={overall.tradeCount > 0 ? `${overall.tradeCount} trades` : undefined}
         />
         <StatCard
           label="Avg Return / Trade"
@@ -303,7 +281,7 @@ export default function ReturnsClient({ trades, weekly, monthly, overall }: Prop
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
         <div className="flex flex-wrap items-center justify-between gap-y-3 mb-5">
           <div className="flex gap-1 flex-wrap">
-            {metrics.map(m => (
+            {METRICS.map(m => (
               <button
                 key={m.key}
                 onClick={() => setMetricKey(m.key)}
@@ -313,31 +291,23 @@ export default function ReturnsClient({ trades, weekly, monthly, overall }: Prop
                     : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
                 }`}
               >
-                {metricLabel(m, isTrade)}
+                {m.label}
               </button>
             ))}
           </div>
           <div className="flex gap-3 flex-wrap">
-            <SegmentedControl options={GRANULARITIES} value={granularity} onChange={changeGranularity} />
-            <SegmentedControl options={TIMEFRAMES}    value={timeframe}   onChange={setTimeframe}      />
+            <SegmentedControl options={GRANULARITIES} value={granularity} onChange={setGranularity} />
+            <SegmentedControl options={TIMEFRAMES}    value={timeframe}   onChange={setTimeframe}   />
           </div>
         </div>
-        <BarChart
-          data={chartData}
-          metric={metric}
-          sub={d =>
-            isTrade
-              ? `${d.label} · ${(d as TradeRow).legCount} legs`
-              : `${d.label} · ${d.tradeCount} trade${d.tradeCount !== 1 ? 's' : ''}`
-          }
-        />
+        <BarChart data={chartData} metric={metric} />
       </div>
 
-      {/* Period / trade breakdown table */}
+      {/* Period breakdown table */}
       <div>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-base font-medium text-zinc-300">{isTrade ? 'Trade Breakdown' : 'Period Breakdown'}</h2>
-          <SegmentedControl options={GRANULARITIES} value={granularity} onChange={changeGranularity} />
+          <h2 className="text-base font-medium text-zinc-300">Period Breakdown</h2>
+          <SegmentedControl options={GRANULARITIES} value={granularity} onChange={setGranularity} />
         </div>
 
         {tableData.length === 0 ? (
@@ -347,10 +317,7 @@ export default function ReturnsClient({ trades, weekly, monthly, overall }: Prop
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-zinc-800 bg-zinc-900/60">
-                  {(isTrade
-                    ? ['Trade', 'Legs', 'Realized P&L', 'Result', 'Return', 'Hold']
-                    : ['Period', 'Trades', 'Realized P&L', 'Win Rate', 'Avg Return', 'Avg Hold']
-                  ).map(h => (
+                  {['Period', 'Trades', 'Realized P&L', 'Win Rate', 'Avg Return', 'Avg Hold'].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-medium text-zinc-400 uppercase tracking-wider whitespace-nowrap">
                       {h}
                     </th>
@@ -361,37 +328,21 @@ export default function ReturnsClient({ trades, weekly, monthly, overall }: Prop
                 {tableData.map(row => (
                   <tr key={row.key} className="border-b border-zinc-800/60 last:border-0 hover:bg-zinc-800/30 transition-colors">
                     <td className="px-4 py-3 text-zinc-200 whitespace-nowrap font-medium">{row.label}</td>
-                    <td className="px-4 py-3 text-zinc-400 tabular-nums">
-                      {isTrade ? (row as TradeRow).legCount : row.tradeCount}
-                    </td>
+                    <td className="px-4 py-3 text-zinc-400 tabular-nums">{row.tradeCount}</td>
                     <td className={`px-4 py-3 tabular-nums font-medium ${signColor(row.realizedPl)}`}>
                       {fmtPlSigned(row.realizedPl)}
                     </td>
-                    <td className={`px-4 py-3 tabular-nums ${isTrade ? signColor(row.realizedPl) : 'text-zinc-300'}`}>
-                      {isTrade
-                        ? row.realizedPl > EPS ? 'Win' : row.realizedPl < -EPS ? 'Loss' : 'Flat'
-                        : `${row.winRate.toFixed(1)}%`}
-                    </td>
+                    <td className="px-4 py-3 text-zinc-300 tabular-nums">{row.winRate.toFixed(1)}%</td>
                     <td className={`px-4 py-3 tabular-nums ${signColor(row.avgReturn)}`}>
                       {fmtPctSigned(row.avgReturn)}
                     </td>
-                    <td className="px-4 py-3 text-zinc-300 tabular-nums">
-                      {isTrade ? `${row.avgHoldDays.toFixed(0)}d` : `${row.avgHoldDays.toFixed(1)}d`}
-                    </td>
+                    <td className="px-4 py-3 text-zinc-300 tabular-nums">{row.avgHoldDays.toFixed(1)}d</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-
-        <p className="text-zinc-500 text-xs mt-3 leading-relaxed">
-          One trade = one <span className="text-zinc-400">basket spread round-trip</span> — every leg of the same ETF
-          entered and exited together (the ETF plus its constituent stocks), the same unit the backtester counts.{' '}
-          <span className="text-zinc-400">Per Trade</span> lists each round-trip individually; Weekly and Monthly bucket
-          those same trades by exit date. Positions still open aren&apos;t counted until they close, so these totals can
-          trail the P&amp;L tab, which marks open legs to market.
-        </p>
       </div>
     </div>
   );

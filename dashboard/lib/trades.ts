@@ -96,7 +96,7 @@ function weekStart(date: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-function formatLabel(key: string, granularity: 'weekly' | 'monthly'): string {
+function formatLabel(key: string, granularity: 'daily' | 'weekly' | 'monthly'): string {
   if (granularity === 'monthly') {
     const [y, m] = key.split('-');
     return new Date(parseInt(y), parseInt(m) - 1)
@@ -105,9 +105,6 @@ function formatLabel(key: string, granularity: 'weekly' | 'monthly'): string {
   return new Date(key + 'T12:00:00')
     .toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
-
-const shortDate = (iso: string) =>
-  new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
 // ---------------------------------------------------------------------------
 // ETF / leg attribution (static symbol->ETF map from scripts/gen_symbol_etf_map.py)
@@ -343,57 +340,29 @@ export function tradeSummary(baskets: BasketTrade[]): TradeSummary {
   };
 }
 
-/**
- * One basket round-trip per row, shaped like PeriodStats so the Returns tab can
- * render individual trades through the same chart/table as the calendar buckets.
- * Ascending by exit date, matching bucketBaskets.
- */
-export interface TradeRow extends PeriodStats {
-  etf: string;
-  legCount: number;
-}
-
-export function basketTradeRows(baskets: BasketTrade[]): TradeRow[] {
-  return [...baskets]
-    .sort((a, b) => a.exitDate.localeCompare(b.exitDate))
-    .map((b) => ({
-      // Exit date first so the Returns tab's timeframe filter can compare keys
-      // lexicographically as dates; ETF + entry date make it unique per trade.
-      key: `${b.exitDate.slice(0, 10)}|${b.etf}|${b.entryDate.slice(0, 10)}`,
-      label: `${b.etf} ${shortDate(b.entryDate)}→${shortDate(b.exitDate)}`,
-      realizedPl: b.realizedPl,
-      winRate: b.realizedPl > 0 ? 100 : 0, // binary for a single trade; UI shows Win/Loss
-      avgReturn: b.returnPct,
-      avgHoldDays: b.holdDays,
-      tradeCount: 1,
-      etf: b.etf,
-      legCount: b.legCount,
-    }));
-}
-
-/**
- * Bucket basket trades by exit week/month. Same PeriodStats shape as the rows
- * above, so every Returns view counts one trade the same way the backtester and
- * the Analytics/By-ETF tabs do: one basket spread round-trip, not one lot match.
- */
-export function bucketBaskets(baskets: BasketTrade[], granularity: 'weekly' | 'monthly'): PeriodStats[] {
-  const map: Record<string, BasketTrade[]> = {};
-  for (const b of baskets) {
-    const key = granularity === 'weekly' ? weekStart(new Date(b.exitDate)) : b.exitDate.slice(0, 7);
-    (map[key] ??= []).push(b);
+export function bucketTrades(trades: TradeRecord[], granularity: 'daily' | 'weekly' | 'monthly'): PeriodStats[] {
+  const map: Record<string, TradeRecord[]> = {};
+  for (const t of trades) {
+    const key = granularity === 'daily'
+      ? t.exitDate.slice(0, 10)
+      : granularity === 'weekly'
+        ? weekStart(new Date(t.exitDate))
+        : t.exitDate.slice(0, 7);
+    if (!map[key]) map[key] = [];
+    map[key].push(t);
   }
   return Object.entries(map)
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, bs]) => {
-      const wins = bs.filter((b) => b.realizedPl > 0).length;
+    .map(([key, ts]) => {
+      const wins = ts.filter(t => t.realizedPl > 0).length;
       return {
         key,
         label:       formatLabel(key, granularity),
-        realizedPl:  bs.reduce((s, b) => s + b.realizedPl, 0),
-        winRate:     (wins / bs.length) * 100,
-        avgReturn:   mean(bs.map((b) => b.returnPct)),
-        avgHoldDays: mean(bs.map((b) => b.holdDays)),
-        tradeCount:  bs.length,
+        realizedPl:  ts.reduce((s, t) => s + t.realizedPl, 0),
+        winRate:     (wins / ts.length) * 100,
+        avgReturn:   ts.reduce((s, t) => s + t.returnPct, 0) / ts.length,
+        avgHoldDays: ts.reduce((s, t) => s + t.holdDays, 0) / ts.length,
+        tradeCount:  ts.length,
       };
     });
 }
