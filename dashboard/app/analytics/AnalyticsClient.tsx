@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { StatCard, Card, fmtPct } from '../components/ui';
 import { SvgBarChart, SvgLineChart, SvgGroupedBar, SegmentedControl, type BarDatum } from '../components/charts';
-import type { MonthlyMetric, DrawdownPoint } from '@/lib/analytics';
+import { mean, type MonthlyMetric, type DrawdownPoint } from '@/lib/analytics';
 import type { LegPeriod, TradeSummary } from '@/lib/trades';
 
 interface Overall {
@@ -40,6 +40,15 @@ export default function AnalyticsClient({
 }) {
   const [metric, setMetric] = useState<MetricKey>('sharpe');
 
+  // Headline Sharpe/Sortino = simple average of the monthly values. Only months
+  // with >=2 daily returns have a defined ratio; degenerate months are excluded
+  // so a 1-day partial month can't drag the average to 0. Updates as each new
+  // month's trades close and realize.
+  const solidMonths = monthly.filter((m) => m.tradingDays >= 2);
+  const nMo = solidMonths.length;
+  const avgSharpe = nMo ? mean(solidMonths.map((m) => m.sharpe)) : null;
+  const avgSortino = nMo ? mean(solidMonths.map((m) => m.sortino)) : null;
+
   const isRet = metric === 'ret';
   const monthlyBars: BarDatum[] = monthly.map((m) => ({
     label: m.label,
@@ -61,8 +70,8 @@ export default function AnalyticsClient({
     <div className="space-y-8">
       {/* KPI tiles */}
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
-        <StatCard label="Sharpe (daily)" value={hasEquity ? overall.sharpe.toFixed(2) : '—'} positive={overall.sharpe >= 0} />
-        <StatCard label="Sortino (daily)" value={hasEquity ? overall.sortino.toFixed(2) : '—'} positive={overall.sortino >= 0} />
+        <StatCard label="Sharpe (avg monthly)" value={avgSharpe != null ? avgSharpe.toFixed(2) : '—'} positive={(avgSharpe ?? 0) >= 0} sub={nMo ? `avg of ${nMo} mo` : undefined} />
+        <StatCard label="Sortino (avg monthly)" value={avgSortino != null ? avgSortino.toFixed(2) : '—'} positive={(avgSortino ?? 0) >= 0} sub={nMo ? `avg of ${nMo} mo` : undefined} />
         <StatCard label="Max Drawdown" value={hasEquity ? `${(overall.maxDD * 100).toFixed(2)}%` : '—'} positive={false} />
         <StatCard label="Current DD" value={hasEquity ? `${(overall.curDD * 100).toFixed(2)}%` : '—'} positive={overall.curDD >= 0} />
         <StatCard label="Total Return" value={hasEquity ? fmtPct(overall.totalRet) : '—'} positive={overall.totalRet >= 0} />

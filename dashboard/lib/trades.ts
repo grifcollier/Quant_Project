@@ -59,7 +59,11 @@ export function matchTrades(fills: AlpacaActivity[]): TradeRecord[] {
       } else {
         longLots[symbol].push({ price, qty, date });
       }
-    } else if (side === 'sell') {
+    } else if (side === 'sell' || side === 'sell_short') {
+      // Alpaca reports short *opens* as `sell_short` and long *reductions* as
+      // `sell`. Both are handled here: close any open long lots FIFO first, and
+      // any remainder opens (or adds to) a short lot. Dropping `sell_short`
+      // would silently lose every short leg and mis-book the covering buys.
       if (longLots[symbol].length > 0) {
         let rem = qty;
         while (rem > 0 && longLots[symbol].length > 0) {

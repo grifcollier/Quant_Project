@@ -54,7 +54,9 @@ function matchTrades(fills: AlpacaActivity[]): TradeRecord[] {
       } else {
         longLots[symbol].push({ price, qty, date });
       }
-    } else if (side === 'sell') {
+    } else if (side === 'sell' || side === 'sell_short') {
+      // `sell_short` opens a short; `sell` reduces a long. Both close longs
+      // FIFO first, remainder opens a short. (Mirror of lib/trades.ts.)
       if (longLots[symbol].length > 0) {
         let remaining = qty;
         while (remaining > 0 && longLots[symbol].length > 0) {
