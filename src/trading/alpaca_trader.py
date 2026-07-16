@@ -36,30 +36,86 @@ def get_positions() -> dict:
     return {p.symbol: float(p.market_value) for p in positions}
 
 
+ENTRY_DATE_LOOKBACK_DAYS = 180
+_FLAT_QTY_TOL = 1e-6   # fractional fills never sum to exactly zero
+
+
+def _entry_dates_from_fills(orders, pos_qty: dict) -> dict:
+    """
+    Derive each open position's entry date by replaying its fills chronologically.
+
+    A position's entry is the most recent flat -> non-flat transition, so a symbol
+    that has been closed and reopened reports the age of the *current* position
+    rather than the age of its first-ever fill. This mirrors the backtester, which
+    resets ``entry_date`` on every entry (src/strategies/basket/backtest.py).
+
+    Parameters
+    ----------
+    orders  : Alpaca order objects, any order (sorted internally)
+    pos_qty : {symbol: signed qty currently held}, used to verify the replay
+
+    A symbol is omitted from the result when the replayed quantity disagrees with
+    the broker's actual quantity, which means the fill history is truncated and
+    the position opened before the lookback window. Omitted means "unknown", and
+    callers must not treat it as "old".
+    """
+    from alpaca.trading.enums import OrderSide
+
+    fills = [
+        o for o in orders
+        if o.symbol in pos_qty and o.filled_at is not None and o.filled_qty
+    ]
+    fills.sort(key=lambda o: o.filled_at)
+
+    running    = {}   # symbol -> signed qty held so far
+    open_dates = {}   # symbol -> filled_at of the fill that opened the current position
+    for o in fills:
+        qty = float(o.filled_qty)
+        if qty == 0:
+            continue
+        sign = -1.0 if o.side == OrderSide.SELL else 1.0
+        prev = running.get(o.symbol, 0.0)
+        curr = prev + sign * qty
+        running[o.symbol] = curr
+
+        if abs(prev) <= _FLAT_QTY_TOL and abs(curr) > _FLAT_QTY_TOL:
+            open_dates[o.symbol] = o.filled_at
+        elif abs(curr) <= _FLAT_QTY_TOL:
+            open_dates.pop(o.symbol, None)
+
+    # Drop any symbol whose replay doesn't land on the quantity actually held —
+    # the visible history is partial, so its "entry" would be an artefact.
+    for sym, actual in pos_qty.items():
+        replayed = running.get(sym, 0.0)
+        if abs(replayed - actual) > max(_FLAT_QTY_TOL, 1e-4 * abs(actual)):
+            open_dates.pop(sym, None)
+
+    return open_dates
+
+
 def get_position_details() -> dict:
-    """Return positions as {symbol: {"notional": float, "created_at": datetime}}."""
+    """
+    Return positions as {symbol: {"notional": float, "created_at": datetime}}.
+
+    ``created_at`` is the entry date of the currently-open position. Alpaca's
+    Position object has no such field, so it is reconstructed from fill history.
+    It is None when the fill history is too short to locate the entry, which
+    callers must treat as "unknown" rather than "old".
+    """
     from alpaca.trading.requests import GetOrdersRequest
     from datetime import datetime, timezone, timedelta
 
     client    = _get_client()
     positions = client.get_all_positions()
-    pos_syms  = {p.symbol for p in positions}
+    pos_qty   = {p.symbol: float(p.qty) for p in positions}   # negative when short
 
-    # Derive open date from earliest filled order per symbol (Position has no created_at)
     open_dates = {}
-    if pos_syms:
-        try:
-            after = datetime.now(tz=timezone.utc) - timedelta(days=365)
-            orders = client.get_orders(
-                filter=GetOrdersRequest(status="closed", after=after, limit=500)
-            )
-            for o in orders:
-                if o.symbol not in pos_syms or o.filled_at is None:
-                    continue
-                if o.symbol not in open_dates or o.filled_at < open_dates[o.symbol]:
-                    open_dates[o.symbol] = o.filled_at
-        except Exception:
-            pass
+    if pos_qty:
+        after  = datetime.now(tz=timezone.utc) - timedelta(days=ENTRY_DATE_LOOKBACK_DAYS)
+        orders = client.get_orders(
+            filter=GetOrdersRequest(status="closed", after=after, limit=500)
+        )
+        open_dates = _entry_dates_from_fills(orders, pos_qty)
 
     return {
         p.symbol: {

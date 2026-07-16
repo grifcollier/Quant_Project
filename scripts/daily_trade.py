@@ -72,6 +72,7 @@ def run_basket(etf: str) -> dict:
     signal    = "UNKNOWN"
     z_score   = None
     n_orders  = 0
+    warnings  = []
     for line in output.splitlines():
         if "Signal:" in line:
             signal = line.split("Signal:")[-1].strip()
@@ -82,12 +83,15 @@ def run_basket(etf: str) -> dict:
                 pass
         if "submitted" in line:
             n_orders += 1
+        if line.lstrip().startswith("!!"):
+            warnings.append(line.strip().lstrip("! ").strip())
 
     return {
         "etf":      etf,
         "signal":   signal,
         "z_score":  z_score,
         "n_orders": n_orders,
+        "warnings": warnings,
         "output":   output,
         "error":    result.returncode != 0,
     }
@@ -139,6 +143,13 @@ def main():
 
     total_orders = sum(r["n_orders"] for r in results)
     log(f"\n  Total orders placed: {total_orders}")
+
+    warned = [(r["etf"], w) for r in results for w in r.get("warnings", [])]
+    if warned:
+        log(f"\n  WARNINGS ({len(warned)}):")
+        for etf, w in warned:
+            log(f"    {etf}: {w}")
+
     log(f"  Log written to: {LOG_FILE}")
     log(f"{'='*55}")
 

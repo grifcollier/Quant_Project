@@ -3053,9 +3053,15 @@ def _run_trade_basket(args, acct, capital, execute=False):
             pos_details = get_position_details()
             etf_detail  = pos_details.get(etf, {})
             created_at  = etf_detail.get("created_at")
-            if created_at is not None:
+            if created_at is None:
+                # Not enforceable without an entry date. Never fall through silently:
+                # a stale or missing date previously churned positions in and out.
+                print(f"!! TIME STOP NOT ENFORCED: no entry date for {etf} "
+                      f"(fill history too short or position opened outside lookback)")
+            else:
                 created_date = created_at.date() if hasattr(created_at, "date") else created_at
                 hold_days    = (_date.today() - created_date).days
+                print(f"Held:      {hold_days}d since {created_date}  (max {max_hold_days}d)")
                 if hold_days >= max_hold_days:
                     time_stopped = True
                     print(f"Signal:    TIME STOP (held {hold_days}d >= {max_hold_days}d)")
@@ -3064,7 +3070,7 @@ def _run_trade_basket(args, acct, capital, execute=False):
                             orders.append({"symbol": sym, "close_pos": True,
                                            "note": f"time-stop close {sym}"})
         except Exception as exc:
-            print(f"  Time stop check failed: {exc}")
+            print(f"!! TIME STOP NOT ENFORCED: check failed for {etf}: {exc}")
 
     if not time_stopped:
         if in_position:
